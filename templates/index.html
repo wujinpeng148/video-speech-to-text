@@ -21,6 +21,20 @@
     <main class="main-container">
         <!-- 左侧：上传 + 编辑区 -->
         <section class="panel panel-left">
+            <!-- 行业选择 -->
+            <div class="domain-section" id="domainSection">
+                <div class="section-header">
+                    <h3>📂 选择视频领域（提高识别准确率）</h3>
+                </div>
+                <div class="domain-grid" id="domainGrid">
+                    <div class="domain-card loading">加载中...</div>
+                </div>
+            </div>
+            <!-- 展开行业选择按钮（折叠后显示） -->
+            <button class="domain-toggle-btn hidden" id="domainToggleBtn" title="展开行业选择">
+                📂 展开行业选择
+            </button>
+
             <!-- 上传区域 -->
             <div class="upload-section">
                 <div class="upload-area" id="uploadArea">
@@ -86,6 +100,21 @@
                     placeholder="上传视频后，语音识别结果将显示在这里。你也可以直接粘贴文本进行翻译..."
                     disabled
                 ></textarea>
+                <!-- 说话人标注区 -->
+                <div class="speaker-section hidden" id="speakerSection">
+                    <div class="section-header">
+                        <h3>🎤 说话人标注</h3>
+                        <div class="section-actions">
+                            <span class="speaker-legend">
+                                <span class="legend-dot male"></span> 男声
+                                <span class="legend-dot female"></span> 女声
+                            </span>
+                            <button class="btn btn-sm btn-outline" id="dismissSpeakerBtn">收起</button>
+                        </div>
+                    </div>
+                    <div class="speaker-timeline" id="speakerTimeline"></div>
+                </div>
+
                 <!-- 校对结果区 -->
                 <div class="proofread-panel hidden" id="proofreadPanel">
                     <div class="proofread-header">

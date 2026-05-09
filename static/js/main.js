@@ -16,6 +16,9 @@ const reUploadBtn = document.getElementById("reUploadBtn");
 const sourceText = document.getElementById("sourceText");
 const wordCount = document.getElementById("wordCount");
 const proofreadBtn = document.getElementById("proofreadBtn");
+const speakerSection = document.getElementById("speakerSection");
+const speakerTimeline = document.getElementById("speakerTimeline");
+const dismissSpeakerBtn = document.getElementById("dismissSpeakerBtn");
 const proofreadPanel = document.getElementById("proofreadPanel");
 const proofreadSummary = document.getElementById("proofreadSummary");
 const proofreadList = document.getElementById("proofreadList");
@@ -35,12 +38,15 @@ const translateProgress = document.getElementById("translateProgress");
 const copyResultBtn = document.getElementById("copyResultBtn");
 const clearResultBtn = document.getElementById("clearResultBtn");
 
+const domainGrid = document.getElementById("domainGrid");
+
 const toast = document.getElementById("toast");
 
 let currentVideoFile = null;
 let currentVideoId = null;
 let detectedLanguageCode = null;
 let translatedText = "";
+let currentDomain = "general";  // 默认通用日常
 
 // ========== Toast 提示 ==========
 let toastTimer;
@@ -50,6 +56,97 @@ function showToast(message, duration = 2500) {
     toast.classList.add("show");
     toastTimer = setTimeout(() => toast.classList.remove("show"), duration);
 }
+
+// ========== 行业领域选择 ==========
+async function loadDomains() {
+    try {
+        const response = await fetch("/api/domains");
+        const data = await response.json();
+        if (data.success && data.domains) {
+            renderDomainCards(data.domains);
+        }
+    } catch (error) {
+        console.error("Failed to load domains:", error);
+        domainGrid.innerHTML = '<div class="domain-card">加载失败，使用默认设置</div>';
+    }
+}
+
+function renderDomainCards(domains) {
+    domainGrid.innerHTML = "";
+    domains.forEach(domain => {
+        const card = document.createElement("div");
+        card.className = `domain-card${domain.code === currentDomain ? " selected" : ""}`;
+        card.dataset.code = domain.code;
+        card.innerHTML = `
+            <span class="domain-icon">${domain.icon}</span>
+            <div class="domain-name">${domain.name}</div>
+            <div class="domain-desc">${domain.desc}</div>
+            <div class="domain-count">${domain.keywords_count} 个专业词汇</div>
+        `;
+        card.addEventListener("click", () => selectDomain(domain.code));
+        domainGrid.appendChild(card);
+    });
+}
+
+function selectDomain(code) {
+    currentDomain = code;
+    document.querySelectorAll(".domain-card").forEach(c => {
+        c.classList.toggle("selected", c.dataset.code === code);
+    });
+    showToast(`已选择「${DOMAIN_NAMES[code] || code}」领域`);
+}
+
+// 域名映射（供选择时展示）
+const DOMAIN_NAMES = {};
+fetch("/api/domains").then(r => r.json()).then(data => {
+    if (data.domains) data.domains.forEach(d => { DOMAIN_NAMES[d.code] = d.name; });
+});
+
+// ========== 行业选择折叠/展开 ==========
+function collapseDomainSection() {
+    const section = document.getElementById("domainSection");
+    const toggleBtn = document.getElementById("domainToggleBtn");
+    if (!section || section.classList.contains("collapsed")) return;
+
+    section.style.maxHeight = section.scrollHeight + "px";
+    requestAnimationFrame(() => {
+        section.style.maxHeight = "0";
+        section.style.opacity = "0";
+        section.style.marginBottom = "0";
+        section.style.overflow = "hidden";
+    });
+    section.classList.add("collapsed");
+
+    // 显示展开按钮
+    if (toggleBtn) toggleBtn.classList.remove("hidden");
+}
+
+function expandDomainSection() {
+    const section = document.getElementById("domainSection");
+    const toggleBtn = document.getElementById("domainToggleBtn");
+    if (!section) return;
+
+    section.classList.remove("collapsed", "hidden");
+    section.style.maxHeight = section.scrollHeight + "px";
+    section.style.opacity = "1";
+    section.style.marginBottom = "16px";
+    section.style.overflow = "visible";
+
+    // 动画完成后清除固定高度
+    section.addEventListener("transitionend", function handler() {
+        section.style.maxHeight = "";
+        section.removeEventListener("transitionend", handler);
+    });
+
+    // 隐藏展开按钮
+    if (toggleBtn) toggleBtn.classList.add("hidden");
+}
+
+// 绑定展开按钮
+document.getElementById("domainToggleBtn").addEventListener("click", expandDomainSection);
+
+// 页面加载时加载域名
+loadDomains();
 
 // ========== 上传区域事件 ==========
 uploadArea.addEventListener("click", () => videoInput.click());
@@ -80,7 +177,12 @@ videoInput.addEventListener("change", () => {
 });
 
 reUploadBtn.addEventListener("click", () => {
+    if (sourceText.value.trim() || translatedText) {
+        if (!confirm("确定重新上传吗？\n\n当前识别文本和翻译结果将被清空。")) return;
+    }
     resetUpload();
+    // 重新展开行业选择
+    expandDomainSection();
 });
 
 // ========== 视频上传处理 ==========
@@ -101,6 +203,7 @@ function resetUpload() {
     translateBtn.disabled = true;
     proofreadBtn.disabled = true;
     proofreadPanel.classList.add("hidden");
+    speakerSection.classList.add("hidden");
     updateWordCount();
     clearResult();
 }
@@ -187,6 +290,8 @@ startTranscribeBtn.addEventListener("click", async () => {
             body: JSON.stringify({
                 video_id: currentVideoId,
                 language: language,
+                domain: currentDomain,
+                model_size: "small",
             }),
         });
 
@@ -217,7 +322,18 @@ startTranscribeBtn.addEventListener("click", async () => {
             }
         }
 
-        showToast(`识别完成！共 ${data.text.length} 个字符`);
+        showToast(`识别完成！共 ${data.text.length} 个字符，模型: ${data.model_size || 'small'}`);
+
+        // 折叠行业选择（可重新展开）
+        collapseDomainSection();
+
+        // 渲染说话人标注（大段）
+        if (data.speaker_stats && data.speaker_stats.has_detection) {
+            renderSpeakerTimeline(data.speaker_blocks, data.speaker_stats);
+        }
+
+        // 自动触发校对
+        setTimeout(() => performProofread(true), 300);
 
     } catch (error) {
         transcribeProgress.classList.add("hidden");
@@ -228,16 +344,33 @@ startTranscribeBtn.addEventListener("click", async () => {
 });
 
 // ========== 文本校对 ==========
-proofreadBtn.addEventListener("click", async () => {
+proofreadBtn.addEventListener("click", () => performProofread(false));
+
+async function performProofread(isAuto) {
     const text = sourceText.value.trim();
     if (!text) {
-        showToast("请先输入或识别文本");
+        if (!isAuto) showToast("请先输入或识别文本");
         return;
     }
 
-    proofreadBtn.disabled = true;
-    proofreadBtn.textContent = "校对中...";
+    if (!isAuto) {
+        proofreadBtn.disabled = true;
+        proofreadBtn.textContent = "校对中...";
+    }
     proofreadPanel.classList.add("hidden");
+    // 隐藏旧提醒框
+    const oldBanner = document.querySelector(".alert-banner");
+    if (oldBanner) oldBanner.remove();
+    const oldIndicator = document.querySelector(".auto-proofread-indicator");
+    if (oldIndicator) oldIndicator.remove();
+
+    // 自动校对的加载提示
+    if (isAuto && data.issues === undefined) {
+        const indicator = document.createElement("div");
+        indicator.className = "auto-proofread-indicator";
+        indicator.innerHTML = '<div class="spinner spinner-sm"></div><span>智能校对中...</span>';
+        proofreadPanel.parentNode.insertBefore(indicator, proofreadPanel);
+    }
 
     try {
         const response = await fetch("/api/proofread", {
@@ -252,39 +385,121 @@ proofreadBtn.addEventListener("click", async () => {
             throw new Error(data.error || "校对失败");
         }
 
+        // 移除加载指示器
+        const indicator = document.querySelector(".auto-proofread-indicator");
+        if (indicator) indicator.remove();
+
+        // 显示提醒框
+        showAlertBanner(data);
+
+        // 渲染详细列表
         renderProofreadResults(data);
 
     } catch (error) {
-        showToast(`校对失败: ${error.message}`);
-        console.error("Proofread error:", error);
+        const indicator = document.querySelector(".auto-proofread-indicator");
+        if (indicator) indicator.remove();
+        if (!isAuto) {
+            showToast(`校对失败: ${error.message}`);
+            console.error("Proofread error:", error);
+        }
     } finally {
         proofreadBtn.disabled = false;
         proofreadBtn.textContent = "🔍 校对";
     }
-});
+}
+
+// ========== 醒目的提醒框 ==========
+function showAlertBanner(data) {
+    const summary = data.summary;
+    const stats = data.stats;
+
+    let iconSymbol = "";
+    let titleText = "";
+    if (summary.level === "clean") {
+        iconSymbol = "✅";
+        titleText = "文本检查通过";
+    } else if (summary.level === "error") {
+        iconSymbol = "🚫";
+        titleText = "发现语法错误，建议修改";
+    } else if (summary.level === "warning") {
+        iconSymbol = "⚠️";
+        titleText = "发现疑似问题，请关注";
+    } else {
+        iconSymbol = "💡";
+        titleText = "优化建议";
+    }
+
+    const banner = document.createElement("div");
+    banner.className = `alert-banner ${summary.level}`;
+    banner.id = "alertBanner";
+
+    let statsHTML = "";
+    if (stats.error > 0) {
+        statsHTML += `<div class="alert-stat num-error">❌ ${stats.error} 错误</div>`;
+    }
+    if (stats.warning > 0) {
+        statsHTML += `<div class="alert-stat num-warning">⚠️ ${stats.warning} 警告</div>`;
+    }
+    if (stats.suggestion > 0) {
+        statsHTML += `<div class="alert-stat num-suggestion">💡 ${stats.suggestion} 建议</div>`;
+    }
+
+    banner.innerHTML = `
+        <div class="alert-icon">${iconSymbol}</div>
+        <div class="alert-body">
+            <div class="alert-title">${titleText}</div>
+            <div class="alert-desc">${summary.text}</div>
+        </div>
+        ${statsHTML ? `<div class="alert-stats">${statsHTML}</div>` : ""}
+        <button class="alert-close" id="dismissAlertBtn" title="关闭提醒">×</button>
+    `;
+
+    // 插入到编辑区顶部
+    const editorSection = document.querySelector(".editor-section");
+    const sectionHeader = editorSection.querySelector(".section-header");
+    sectionHeader.after(banner);
+
+    // 关闭按钮
+    document.getElementById("dismissAlertBtn").addEventListener("click", () => {
+        banner.style.animation = "fadeOut 0.2s ease forwards";
+        setTimeout(() => banner.remove(), 200);
+    });
+}
 
 function renderProofreadResults(data) {
     proofreadList.innerHTML = "";
 
     if (!data.issues || data.issues.length === 0) {
-        proofreadSummary.textContent = "✅ 未发现明显错别字";
+        proofreadSummary.textContent = "✅ 未发现明显问题";
         proofreadPanel.classList.remove("hidden");
         const emptyItem = document.createElement("div");
         emptyItem.className = "proofread-item";
-        emptyItem.innerHTML = '<span style="color: var(--text-secondary)">文本看起来没问题，无需修改。</span>';
+        emptyItem.innerHTML = '<span style="color: var(--text-secondary); font-size: 13px;">✅ 文本看起来没问题，无需修改。</span>';
         proofreadList.appendChild(emptyItem);
         return;
     }
 
-    proofreadSummary.textContent = `⚠️ 发现 ${data.total} 处疑似问题`;
+    proofreadSummary.textContent = `🔍 发现 ${data.total} 处问题（点击可定位到原文）`;
 
     data.issues.forEach((issue, index) => {
         const item = document.createElement("div");
-        item.className = "proofread-item";
+        item.className = "proofread-item clickable";
         item.id = `proofread-issue-${index}`;
+        item.title = "点击定位到原文中的问题位置";
 
-        const badgeType = issue.type === "typo" ? "错字" : "疑词";
-        const badgeClass = issue.type === "typo" ? "typo" : "unknown_word";
+        // 类型徽章
+        const typeLabels = {
+            typo: "错字", unknown_word: "疑词", redundancy: "冗余",
+            grammar: "语法", punctuation: "标点", collocation: "搭配",
+        };
+        const badgeLabel = typeLabels[issue.type] || issue.type;
+        const badgeClass = issue.type;
+
+        // 严重程度圆点
+        let severityDot = "";
+        if (issue.severity) {
+            severityDot = `<span class="severity-dot severity-${issue.severity}" title="${issue.severity}"></span>`;
+        }
 
         let suggestionHTML = "";
         if (issue.suggestion) {
@@ -297,15 +512,21 @@ function renderProofreadResults(data) {
         }
 
         let actionHTML = "";
-        if (issue.suggestion) {
+        if (issue.suggestion && issue.suggestion !== "请检查标点使用" && issue.type !== "grammar") {
             actionHTML = `
                 <button class="issue-action accept" data-index="${index}">替换</button>
                 <button class="issue-action ignore" data-index="${index}">忽略</button>
             `;
+        } else if (issue.type === "grammar" || issue.type === "punctuation") {
+            actionHTML = `<button class="issue-action ignore" data-index="${index}">忽略</button>`;
         }
 
+        // 定位图标
+        const locateIcon = `<span style="flex-shrink:0;font-size:14px;color:var(--text-muted);margin-left:4px" title="点击定位">📍</span>`;
+
         item.innerHTML = `
-            <span class="issue-badge ${badgeClass}">${badgeType}</span>
+            ${severityDot}
+            <span class="issue-badge ${badgeClass}">${badgeLabel}</span>
             <div class="issue-info">
                 <span class="issue-text">「${issue.original}」</span>
                 ${suggestionHTML}
@@ -313,10 +534,18 @@ function renderProofreadResults(data) {
                 <div style="font-size:11px;color:var(--text-muted);margin-top:1px">上下文: ...${issue.context}...</div>
                 ${altHTML}
             </div>
+            ${locateIcon}
             <div style="display:flex;gap:6px;flex-shrink:0">
                 ${actionHTML}
             </div>
         `;
+
+        // 整行点击 → 定位到原文
+        item.addEventListener("click", (e) => {
+            // 不拦截按钮自身的点击
+            if (e.target.tagName === "BUTTON" || e.target.closest(".issue-suggestion")) return;
+            locateIssueInText(issue, index);
+        });
 
         proofreadList.appendChild(item);
     });
@@ -325,7 +554,8 @@ function renderProofreadResults(data) {
 
     // 绑定替换按钮事件
     proofreadList.querySelectorAll(".issue-action.accept").forEach(btn => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
             const idx = parseInt(btn.dataset.index);
             const issue = data.issues[idx];
             if (issue.suggestion) {
@@ -333,7 +563,6 @@ function renderProofreadResults(data) {
                 const after = sourceText.value.substring(issue.end);
                 sourceText.value = before + issue.suggestion + after;
                 updateWordCount();
-                // 移除该条
                 const itemEl = document.getElementById(`proofread-issue-${idx}`);
                 if (itemEl) itemEl.style.opacity = "0.4";
                 btn.disabled = true;
@@ -345,7 +574,8 @@ function renderProofreadResults(data) {
 
     // 绑定忽略按钮事件
     proofreadList.querySelectorAll(".issue-action.ignore").forEach(btn => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
             const idx = parseInt(btn.dataset.index);
             const itemEl = document.getElementById(`proofread-issue-${idx}`);
             if (itemEl) itemEl.style.opacity = "0.4";
@@ -353,10 +583,134 @@ function renderProofreadResults(data) {
             btn.textContent = "已忽略";
         });
     });
+
+    // suggestion 点击 → 替换
+    proofreadList.querySelectorAll(".issue-suggestion").forEach(sug => {
+        sug.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const itemEl = sug.closest(".proofread-item");
+            const acceptBtn = itemEl.querySelector(".issue-action.accept");
+            if (acceptBtn) acceptBtn.click();
+        });
+    });
+}
+
+// ========== 定位到原文问题位置 ==========
+function locateIssueInText(issue, index) {
+    sourceText.focus();
+
+    // 选中问题文本
+    sourceText.setSelectionRange(issue.start, issue.end);
+
+    // 计算行高，滚动到可见区域
+    const textarea = sourceText;
+    const textBefore = textarea.value.substring(0, issue.start);
+    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 22;
+    const paddingTop = parseFloat(getComputedStyle(textarea).paddingTop) || 16;
+    const lines = textBefore.split("\n").length;
+    const targetScroll = (lines - 1) * lineHeight + paddingTop - 60; // 60px 偏移，避免太贴顶
+    textarea.scrollTop = Math.max(0, targetScroll);
+
+    // 添加脉冲高亮动画
+    textarea.classList.remove("highlight-pulse");
+    void textarea.offsetWidth; // 强制回流
+    textarea.classList.add("highlight-pulse");
+
+    // 当前点击的条目高亮
+    const allItems = proofreadList.querySelectorAll(".proofread-item.clickable");
+    allItems.forEach(el => el.style.background = "");
+    const currentItem = document.getElementById(`proofread-issue-${index}`);
+    if (currentItem) {
+        currentItem.style.background = "#fde68a";
+        setTimeout(() => { currentItem.style.background = ""; }, 2000);
+    }
 }
 
 dismissProofreadBtn.addEventListener("click", () => {
     proofreadPanel.classList.add("hidden");
+});
+
+// ========== 说话人标注 ==========
+function renderSpeakerTimeline(blocks, stats) {
+    speakerTimeline.innerHTML = "";
+
+    if (!blocks || blocks.length === 0) return;
+
+    blocks.forEach((block, i) => {
+        const gender = block.gender || "unknown";
+        const confidence = block.confidence || 0;
+        const segCount = block.segment_count || 1;
+
+        let icon = "🤷";
+        let label = "未知";
+        let blockLabel = "";
+        if (gender === "male") {
+            icon = "👨";
+            label = "男";
+            blockLabel = "男声";
+        } else if (gender === "female") {
+            icon = "👩";
+            label = "女";
+            blockLabel = "女声";
+        }
+
+        const item = document.createElement("div");
+        item.className = `speaker-segment ${gender}`;
+        item.title = `点击定位到原文`;
+        item.innerHTML = `
+            <span class="gender-icon">${icon}</span>
+            <span class="segment-time">${formatTime(block.start)} - ${formatTime(block.end)}</span>
+            <span class="segment-text" title="${escapeHtml(block.text)}">${escapeHtml(block.text.substring(0, 60))}${block.text.length > 60 ? '...' : ''}</span>
+            <span class="segment-confidence">${blockLabel} ${Math.round(confidence * 100)}% · ${block.duration}秒 · ${segCount}句</span>
+        `;
+
+        // 点击定位到原文
+        item.addEventListener("click", () => {
+            const fullText = sourceText.value;
+            const idx = fullText.indexOf(block.text.substring(0, 20));
+            if (idx !== -1) {
+                sourceText.focus();
+                sourceText.setSelectionRange(idx, idx + Math.min(block.text.length, fullText.length - idx));
+                const textBefore = fullText.substring(0, idx);
+                const lineHeight = parseFloat(getComputedStyle(sourceText).lineHeight) || 22;
+                const paddingTop = parseFloat(getComputedStyle(sourceText).paddingTop) || 16;
+                const lines = textBefore.split("\n").length;
+                sourceText.scrollTop = Math.max(0, (lines - 1) * lineHeight + paddingTop - 60);
+                sourceText.classList.remove("highlight-pulse");
+                void sourceText.offsetWidth;
+                sourceText.classList.add("highlight-pulse");
+            }
+        });
+
+        speakerTimeline.appendChild(item);
+    });
+
+    // 更新标题显示统计
+    const header = speakerSection.querySelector(".section-header h3");
+    if (header && stats) {
+        let statsText = "🎤 说话人标注";
+        if (stats.male_blocks > 0) statsText += ` · 👨${stats.male_blocks}段男声 (${stats.male_duration}秒)`;
+        if (stats.female_blocks > 0) statsText += ` · 👩${stats.female_blocks}段女声 (${stats.female_duration}秒)`;
+        header.textContent = statsText;
+    }
+
+    speakerSection.classList.remove("hidden");
+}
+
+function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+dismissSpeakerBtn.addEventListener("click", () => {
+    speakerSection.classList.add("hidden");
 });
 
 // ========== 文本编辑区 ==========

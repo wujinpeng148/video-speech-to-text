@@ -13,15 +13,9 @@ import whisper
 import zhconv
 import jieba
 import numpy as np
+import librosa
+import edge_tts
 from pypinyin import pinyin, Style
-
-# librosa 用于基频检测（男女声识别），可选依赖
-try:
-    import librosa
-    HAS_LIBROSA = True
-except ImportError:
-    HAS_LIBROSA = False
-    print("警告：librosa 未安装，男女声识别功能不可用", file=sys.stderr)
 
 # 启动时自动查找 ffmpeg 并加入 PATH（whisper 内部也需要调用 ffmpeg）
 def _setup_ffmpeg_path():
@@ -143,268 +137,6 @@ COMMON_TYPOS = {
     "裸": "棵", "名": "各", "向": "像",
 }
 
-# ========== 行业/领域分类及其专业词库 ==========
-DOMAIN_CATEGORIES = {
-    "general": {
-        "name": "通用日常",
-        "icon": "💬",
-        "desc": "日常对话、生活记录、Vlog、闲聊",
-        "keywords": [
-            "聊天", "对话", "日常", "生活", "朋友", "家庭", "工作", "学习",
-            "吃饭", "睡觉", "上班", "下班", "周末", "假期", "旅游", "购物",
-            "做饭", "打扫", "孩子", "父母", "聚会", "生日", "结婚", "搬家",
-            "开车", "坐车", "走路", "天气", "衣服", "手机", "电脑", "电视",
-        ],
-    },
-    "tech": {
-        "name": "科技/互联网",
-        "icon": "💻",
-        "desc": "编程开发、AI人工智能、技术分享、产品发布",
-        "keywords": [
-            "人工智能", "机器学习", "深度学习", "算法", "模型", "训练", "推理",
-            "神经网络", "自然语言处理", "计算机视觉", "大数据", "云计算", "服务器",
-            "数据库", "API", "前端", "后端", "全栈", "Python", "Java", "JavaScript",
-            "React", "Vue", "Docker", "Kubernetes", "微服务", "分布式", "高并发",
-            "开源", "代码", "编程", "开发", "调试", "部署", "运维", "架构",
-            "产品经理", "需求", "迭代", "敏捷", "Scrum", "SaaS", "PaaS", "IaaS",
-            "区块链", "Web3", "元宇宙", "量子计算", "芯片", "GPU", "TPU", "向量",
-        ],
-    },
-    "medical": {
-        "name": "医疗/健康",
-        "icon": "🏥",
-        "desc": "医学讲座、健康科普、临床诊断、药物研究",
-        "keywords": [
-            "诊断", "治疗", "手术", "药物", "临床", "患者", "医生", "护士",
-            "医院", "门诊", "住院", "检查", "化验", "CT", "核磁共振", "B超",
-            "血压", "血糖", "血脂", "心电图", "疫苗", "抗体", "免疫", "感染",
-            "抗生素", "激素", "麻醉", "输血", "急救", "ICU", "康复", "护理",
-            "中医", "针灸", "推拿", "中药", "经络", "穴位", "辨证", "脉象",
-            "肿瘤", "癌症", "糖尿病", "高血压", "心脏病", "脑卒中", "抑郁症",
-            "基因", "细胞", "蛋白质", "酶", "代谢", "内分泌", "神经系统",
-        ],
-    },
-    "legal": {
-        "name": "法律/政务",
-        "icon": "⚖️",
-        "desc": "法律法规、政策解读、合同文书、庭审辩论",
-        "keywords": [
-            "法律", "法规", "法院", "法官", "律师", "原告", "被告", "诉讼",
-            "合同", "协议", "证据", "判决", "裁决", "上诉", "仲裁", "调解",
-            "刑法", "民法", "行政法", "宪法", "知识产权", "专利", "商标", "著作权",
-            "合同纠纷", "侵权", "违约", "赔偿", "免责", "条款", "效力", "执行",
-            "政策", "政府", "部门", "审批", "监管", "合规", "处罚", "复议",
-            "立法", "司法", "执法", "检察院", "公安", "监察", "听证", "质证",
-        ],
-    },
-    "finance": {
-        "name": "金融/财经",
-        "icon": "📈",
-        "desc": "股票基金、经济分析、投资理财、商业评论",
-        "keywords": [
-            "股票", "基金", "债券", "期货", "外汇", "黄金", "原油", "数字货币",
-            "投资", "理财", "风险", "收益", "利率", "汇率", "通胀", "GDP",
-            "A股", "港股", "美股", "IPO", "上市", "并购", "重组", "退市",
-            "牛市", "熊市", "涨停", "跌停", "成交量", "K线", "均线", "MACD",
-            "银行", "保险", "证券", "信托", "私募", "公募", "PE", "VC",
-            "市值", "估值", "市盈率", "市净率", "ROE", "财务报表", "资产负债表",
-            "营收", "利润", "现金流", "分红", "股息", "回购", "拆股", "股权",
-        ],
-    },
-    "education": {
-        "name": "教育/学术",
-        "icon": "🎓",
-        "desc": "课程教学、学术讲座、论文答辩、考试辅导",
-        "keywords": [
-            "教育", "教学", "课程", "学生", "老师", "考试", "论文", "研究",
-            "大学", "高中", "初中", "小学", "幼儿园", "博士", "硕士", "本科",
-            "数学", "物理", "化学", "生物", "历史", "地理", "政治", "英语",
-            "实验", "数据", "分析", "结论", "假设", "验证", "方法", "理论",
-            "学术", "期刊", "发表", "引用", "参考文献", "导师", "答辩", "毕业",
-            "高考", "中考", "考研", "考公", "雅思", "托福", "GRE", "SAT",
-        ],
-    },
-    "entertainment": {
-        "name": "影视/娱乐",
-        "icon": "🎬",
-        "desc": "电影电视剧、综艺节目、游戏直播、短视频",
-        "keywords": [
-            "电影", "电视剧", "综艺", "纪录片", "动画", "动漫", "短片", "预告片",
-            "导演", "演员", "剧本", "镜头", "剪辑", "特效", "配音", "字幕",
-            "票房", "收视率", "口碑", "评分", "影评", "剧透", "番剧", "追剧",
-            "游戏", "电竞", "直播", "主播", "弹幕", "打赏", "通关", "BOSS",
-            "角色", "剧情", "画面", "音效", "配乐", "摄影", "灯光", "美术",
-            "综艺", "选秀", "真人秀", "脱口秀", "相声", "小品", "脱口秀大会",
-        ],
-    },
-    "engineering": {
-        "name": "工程/制造",
-        "icon": "⚙️",
-        "desc": "工业技术、建筑工程、机械制造、质量检测",
-        "keywords": [
-            "工程", "项目", "施工", "设计", "图纸", "材料", "设备", "工艺",
-            "建筑", "桥梁", "隧道", "道路", "管道", "电气", "暖通", "给排水",
-            "机械", "制造", "加工", "焊接", "铸造", "模具", "轴承", "齿轮",
-            "质量", "检测", "标准", "认证", "ISO", "CE", "UL", "3C",
-            "自动化", "PLC", "传感器", "变频器", "电机", "气缸", "液压", "气动",
-            "CAD", "CAM", "CAE", "BIM", "有限元", "仿真", "拓扑优化", "逆向工程",
-        ],
-    },
-    "food": {
-        "name": "餐饮/美食",
-        "icon": "🍳",
-        "desc": "美食制作、餐饮评测、烹饪教程、饮食文化",
-        "keywords": [
-            "美食", "烹饪", "食材", "菜谱", "厨房", "餐厅", "厨师", "口味",
-            "煎", "炒", "炸", "蒸", "煮", "烤", "炖", "焖", "烧", "卤",
-            "牛肉", "猪肉", "鸡肉", "鱼肉", "虾", "蟹", "蔬菜", "水果",
-            "酱油", "醋", "盐", "糖", "辣椒", "花椒", "葱", "姜", "蒜",
-            "刀工", "火候", "调味", "摆盘", "色香味", "口感", "鲜嫩", "酥脆",
-            "中餐", "西餐", "日料", "韩餐", "火锅", "烧烤", "甜品", "面点",
-            "米其林", "大众点评", "网红店", "打卡", "探店", "外卖", "堂食",
-        ],
-    },
-    "sports": {
-        "name": "体育/电竞",
-        "icon": "⚽",
-        "desc": "赛事解说、运动教学、电竞比赛、健身训练",
-        "keywords": [
-            "比赛", "选手", "教练", "裁判", "冠军", "亚军", "季军", "奖牌",
-            "奥运会", "世界杯", "锦标赛", "联赛", "季后赛", "总决赛", "预选赛",
-            "足球", "篮球", "排球", "网球", "乒乓球", "羽毛球", "游泳", "田径",
-            "进攻", "防守", "战术", "配合", "传球", "投篮", "射门", "得分",
-            "LOL", "DOTA", "CS", "吃鸡", "王者荣耀", "原神", "电竞", "战队",
-            "健身", "跑步", "瑜伽", "举重", "跳绳", "拉伸", "有氧", "无氧",
-            "肌肉", "脂肪", "蛋白质", "碳水", "卡路里", "代谢", "增肌", "减脂",
-            "马拉松", "铁人三项", "攀岩", "潜水", "滑雪", "冲浪", "滑板", "骑行",
-        ],
-    },
-    "ecommerce": {
-        "name": "电商/零售",
-        "icon": "🛒",
-        "desc": "电商运营、直播带货、供应链管理、零售营销",
-        "keywords": [
-            "电商", "淘宝", "京东", "拼多多", "抖音", "快手", "直播带货", "小红书",
-            "GMV", "转化率", "客单价", "复购率", "流量", "点击率", "曝光", "ROI",
-            "供应链", "仓储", "物流", "配送", "库存", "SKU", "SPU", "品类",
-            "运营", "选品", "定价", "促销", "满减", "优惠券", "秒杀", "拼团",
-            "买家", "卖家", "评价", "退货", "售后", "客服", "包邮", "自营",
-            "跨境电商", "独立站", "Shopify", "亚马逊", "速卖通", "DTC", "私域", "公域",
-        ],
-    },
-    "realestate": {
-        "name": "房地产/建筑",
-        "icon": "🏗️",
-        "desc": "房地产开发、建筑设计、室内装修、物业管理",
-        "keywords": [
-            "房地产", "楼盘", "房价", "户型", "面积", "容积率", "绿化率", "公摊",
-            "开发商", "置业顾问", "样板间", "毛坯", "精装", "别墅", "公寓", "商铺",
-            "房贷", "首付", "利率", "公积金", "产权", "房产证", "契税", "过户",
-            "建筑", "设计", "结构", "地基", "混凝土", "钢筋", "砌体", "幕墙",
-            "装修", "硬装", "软装", "水电", "泥瓦", "油漆", "吊顶", "地板",
-            "物业", "小区", "绿化", "停车位", "门禁", "电梯", "消防", "验收",
-        ],
-    },
-    "automotive": {
-        "name": "汽车/交通",
-        "icon": "🚗",
-        "desc": "汽车评测、智能驾驶、交通出行、新能源车",
-        "keywords": [
-            "汽车", "新能源", "电动车", "混动", "燃油车", "SUV", "MPV", "轿车",
-            "比亚迪", "特斯拉", "蔚来", "小鹏", "理想", "华为", "小米汽车", "宁德时代",
-            "智能驾驶", "自动驾驶", "激光雷达", "毫米波", "摄像头", "芯片", "算力", "OTA",
-            "续航", "充电", "换电", "快充", "电池", "电机", "电控", "底盘",
-            "发动机", "变速箱", "扭矩", "马力", "油耗", "排放", "国标", "碰撞测试",
-            "交通", "交规", "驾照", "限行", "高速", "ETC", "导航", "停车",
-        ],
-    },
-    "agriculture": {
-        "name": "农业/养殖",
-        "icon": "🌾",
-        "desc": "农业种植、畜牧养殖、渔业水产、农业科技",
-        "keywords": [
-            "农业", "种植", "养殖", "畜牧", "渔业", "粮食", "蔬菜", "水果",
-            "水稻", "小麦", "玉米", "大豆", "棉花", "油菜", "甘蔗", "茶叶",
-            "养猪", "养鸡", "养牛", "养羊", "饲料", "兽药", "疫苗", "屠宰",
-            "温室", "大棚", "灌溉", "施肥", "农药", "除草", "收割", "播种",
-            "土壤", "气候", "病虫害", "产量", "品质", "有机", "绿色", "无公害",
-            "智慧农业", "无人机", "卫星遥感", "物联网", "精准农业", "水肥一体", "育种", "转基因",
-        ],
-    },
-    "tourism": {
-        "name": "旅游/酒店",
-        "icon": "✈️",
-        "desc": "旅游攻略、酒店民宿、景点介绍、出行指南",
-        "keywords": [
-            "旅游", "旅行", "自由行", "跟团", "自驾游", "背包客", "穷游", "深度游",
-            "景点", "景区", "门票", "导游", "攻略", "打卡", "网红", "小众",
-            "酒店", "民宿", "青旅", "度假村", "温泉", "海边", "雪山", "古镇",
-            "机票", "火车票", "签证", "护照", "免税店", "退税", "外币", "保险",
-            "携程", "飞猪", "马蜂窝", "穷游网", "Booking", "Airbnb", "Agoda", "TripAdvisor",
-            "国内游", "出境游", "周边游", "一日游", "邮轮", "露营", "徒步", "骑行",
-        ],
-    },
-    "music_art": {
-        "name": "音乐/艺术",
-        "icon": "🎵",
-        "desc": "音乐制作、乐器演奏、美术设计、艺术鉴赏",
-        "keywords": [
-            "音乐", "歌曲", "旋律", "和弦", "节奏", "编曲", "混音", "母带",
-            "钢琴", "吉他", "贝斯", "鼓", "小提琴", "古筝", "二胡", "笛子",
-            "流行", "摇滚", "民谣", "嘻哈", "电子", "古典", "爵士", "R&B",
-            "演唱", "歌词", "创作", "翻唱", "乐队", "演出", "演唱会", "音乐节",
-            "美术", "绘画", "油画", "国画", "素描", "水彩", "雕塑", "版画",
-            "设计", "平面", "UI", "UX", "插画", "Logo", "海报", "字体",
-            "艺术", "展览", "画廊", "拍卖", "收藏", "文物", "非遗", "传统文化",
-        ],
-    },
-    "psychology": {
-        "name": "心理/情感",
-        "icon": "🧠",
-        "desc": "心理咨询、情感关系、人格分析、心理健康",
-        "keywords": [
-            "心理", "情绪", "焦虑", "抑郁", "压力", "失眠", "强迫症", "社恐",
-            "心理咨询", "治疗", "认知行为", "精神分析", "人本主义", "正念", "冥想", "催眠",
-            "人格", "性格", "内向", "外向", "MBTI", "九型人格", "依恋类型", "安全感",
-            "情感", "恋爱", "婚姻", "分手", "复合", "相亲", "暗恋", "表白",
-            "原生家庭", "童年阴影", "自我成长", "边界感", "共情", "内耗", "PUA", "煤气灯",
-            "亲密关系", "沟通", "冲突", "信任", "背叛", "修复", "陪伴", "倾听",
-        ],
-    },
-    "beauty": {
-        "name": "美容/时尚",
-        "icon": "💄",
-        "desc": "美妆护肤、时尚穿搭、发型设计、医美整形",
-        "keywords": [
-            "美妆", "护肤", "化妆", "粉底", "口红", "眼影", "腮红", "遮瑕",
-            "防晒", "精华", "面霜", "面膜", "洁面", "爽肤水", "乳液", "眼霜",
-            "干皮", "油皮", "混油", "敏感肌", "痘痘", "黑头", "毛孔", "美白",
-            "穿搭", "时尚", "潮流", "复古", "简约", "日系", "韩系", "欧美风",
-            "发型", "染发", "烫发", "剪发", "护发", "发膜", "精油", "假发",
-            "医美", "整形", "双眼皮", "隆鼻", "瘦脸", "玻尿酸", "肉毒素", "热玛吉",
-            "香水", "美甲", "纹身", "耳饰", "项链", "手链", "戒指", "包包",
-        ],
-    },
-}
-
-# 行业词库注入状态
-_loaded_domain = None
-
-
-def load_domain_keywords(domain):
-    """将指定行业的专业词汇注入 jieba 词库"""
-    global _loaded_domain
-    if domain == _loaded_domain:
-        return
-    if domain not in DOMAIN_CATEGORIES:
-        return
-
-    # 清除之前的行业词（简单做法：重新加载默认词库并添加新词）
-    keywords = DOMAIN_CATEGORIES[domain]["keywords"]
-    for word in keywords:
-        jieba.add_word(word, freq=100, tag="nz")
-    _loaded_domain = domain
-
 # ========== 语病检测规则 ==========
 
 # 冗余表达模式：(冗余词组, 建议, 说明)
@@ -471,6 +203,8 @@ COLLOCATION_ISSUES = [
 
 # 待处理音频缓存: video_id -> {"audio_path": Path, "expires_at": float}
 _pending = {}
+# 重识别音频缓存: audio_stem -> {"audio_path": Path, "expires_at": float}
+_audio_cache = {}
 
 # 清理过期缓存（每调用时触发）
 def _cleanup_expired():
@@ -480,6 +214,11 @@ def _cleanup_expired():
         item = _pending.pop(vid)
         item["audio_path"].unlink(missing_ok=True)
         item.get("video_path", Path()).unlink(missing_ok=True)
+    # 清理过期音频缓存
+    expired_audio = [k for k, v in _audio_cache.items() if v["expires_at"] < now]
+    for k in expired_audio:
+        item = _audio_cache.pop(k)
+        item["audio_path"].unlink(missing_ok=True)
 
 _model = None
 _model_size = None
@@ -506,9 +245,12 @@ def allowed_video_file(filename):
 
 
 def extract_audio(video_path: Path, audio_path: Path):
+    """提取音频并增强：高通滤波去低频噪声 + 轻量降噪 + 响度归一化"""
     cmd = [
         "ffmpeg", "-i", str(video_path),
-        "-vn", "-acodec", "pcm_s16le",
+        "-vn",
+        "-af", "highpass=f=80,afftdn=nr=12:nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-acodec", "pcm_s16le",
         "-ar", "16000", "-ac", "1",
         "-y", str(audio_path),
     ]
@@ -579,7 +321,7 @@ def detect_language():
         _pending[video_id] = {
             "audio_path": audio_path,
             "video_path": video_path,
-            "expires_at": time.time() + 600,
+            "expires_at": time.time() + 1800,
         }
 
         # 整理语言概率列表（按概率从高到低排序）
@@ -617,365 +359,463 @@ def detect_language():
         return jsonify({"error": f"语言检测失败: {str(e)}"}), 500
 
 
-# ========== 智能标点恢复 ==========
+# ========== 中文数字转阿拉伯数字 ==========
+_CN_NUM_MAP = {
+    "零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "百": 100, "千": 1000, "万": 10000, "亿": 100000000,
+    "两": 2,
+}
+_CN_PLACE = {"十": 10, "百": 100, "千": 1000, "万": 10000, "亿": 100000000}
 
-# 中文句末标识词（通常后面应该加句号）
-SENTENCE_FINAL_PARTICLES = {"了", "的", "呢", "吧", "吗", "啊", "呀", "哦", "哈", "嘛", "呗", "咯", "啦"}
 
-# 疑问关键词 → 句末加问号
-QUESTION_WORDS = {"什么", "怎么", "为什么", "哪", "谁", "何时", "多少", "吗", "呢", "咋", "干嘛", "如何", "是不是", "能不能", "要不要", "会不会"}
+def _cn_num_to_int(cn_str):
+    """将纯中文数字字符串转为整数，如 '三百零五' → 305"""
+    if not cn_str:
+        return None
+    total = 0
+    section = 0  # 万以下的节
+    has_digit = False
 
-# 逗号插入连接词
-COMMA_TRIGGERS = {"但是", "不过", "然而", "所以", "因此", "而且", "并且", "或者", "然后", "接着", "另外", "此外", "同时", "于是", "可是", "只是", "不过", "总之", "简而言之", "换句话说", "例如", "比如", "也就是说", "首先", "其次", "最后", "第一", "第二", "第三"}
+    for i, ch in enumerate(cn_str):
+        if ch in ("零",):
+            has_digit = True
+            continue
+        if ch in _CN_PLACE:
+            place = _CN_PLACE[ch]
+            if section == 0:
+                section = 1
+            if place >= 10000:
+                total = (total + section) * place
+                section = 0
+            else:
+                section *= place
+                total += section
+                section = 0
+            has_digit = True
+        else:
+            val = _CN_NUM_MAP.get(ch)
+            if val is not None and val < 10:
+                section = val
+                has_digit = True
 
-# 分句最小长度（低于此长度不主动断句）
-MIN_CLAUSE_LEN = 3
+    total += section
+    return total if has_digit else None
+
+
+def convert_chinese_numerals(text):
+    """将文本中的中文数字转换为阿拉伯数字"""
+    # 匹配中文数字片段（连续中文数字字符）
+    cn_digit_chars = "零一二三四五六七八九十百千万亿两"
+    pattern = re.compile(rf"第?[{cn_digit_chars}]{{2,}}(?:点[{cn_digit_chars}]+)?(?:\.\d+)?")
+
+    def replace_match(m):
+        s = m.group()
+        ordinal = s.startswith("第")
+        if ordinal:
+            s = s[1:]
+
+        # 处理小数点
+        decimal_part = ""
+        if "点" in s:
+            s, dec = s.split("点", 1)
+            decimal_part = "."
+            for ch in dec:
+                val = _CN_NUM_MAP.get(ch)
+                if val is not None and val < 10:
+                    decimal_part += str(val)
+
+        # 处理已有阿拉伯小数
+        if "." in s:
+            parts = s.split(".")
+            int_str = parts[0]
+            dec_str = parts[1] if len(parts) > 1 else ""
+        else:
+            int_str = s
+            dec_str = ""
+
+        result = _cn_num_to_int(int_str)
+        if result is None:
+            return m.group()
+
+        if decimal_part or dec_str:
+            result_str = str(result) + (decimal_part or ("." + dec_str))
+        else:
+            result_str = str(result)
+
+        if ordinal:
+            return "第" + result_str
+        return result_str
+
+    # 百分比模式
+    pct_pattern = re.compile(r"百分之(["+ cn_digit_chars + r"]{2,})")
+    text = pct_pattern.sub(lambda m: _pct_replace(m), text)
+
+    # 通用中文数字
+    text = pattern.sub(replace_match, text)
+
+    return text
+
+
+def _pct_replace(m):
+    val = _cn_num_to_int(m.group(1))
+    return f"{val}%" if val else m.group()
+
+
+# ========== 智能标点恢复（增强版） ==========
+
+# 句末语气词（句子结束信号）
+SENTENCE_FINAL = {
+    "了", "的", "吧", "吗", "呢", "啊", "呀", "哦", "哈", "嘛", "呗", "咯", "啦",
+    "哇", "哟", "呐", "哎", "噢", "嘞", "哒", "噻", "嘛",
+}
+
+# 疑问标志词
+QUESTION_MARKERS = {
+    "什么", "怎么", "为什么", "哪", "谁", "何时", "多少", "吗", "呢", "咋",
+    "干嘛", "如何", "是不是", "能不能", "要不要", "会不会", "可不可以",
+    "怎么回事", "什么样", "怎么办", "哪个", "哪里", "哪位", "几点",
+    "是否", "可否", "何必", "何不", "怎能", "岂能",
+}
+
+# 疑问句末词
+QUESTION_END = {"吗", "呢", "吧", "呀"}
+
+# 强烈感叹触发词
+EXCLAMATION_STRONG = {
+    "太", "真", "好", "多么", "这么", "那么", "非常", "特别", "极其",
+    "实在", "简直", "绝对", "完全", "超级", "超",
+    "天哪", "天啊", "老天", "厉害", "太棒了", "太好了", "太美了", "太强了",
+    "竟然", "居然", "万万没想到", "不可思议", "难以置信",
+    "不得了", "了不得",
+}
+
+# 感叹句末语气词
+EXCLAMATION_END = {"啊", "呀", "哇", "啦", "哦", "哟", "哈", "呐", "哎", "唉", "噢"}
+
+# 程度副词 + 感叹尾部模式
+EXCLAMATION_DEGREE = {"太", "真", "好", "多么", "这么", "那么", "非常"}
+
+# 连接词/转折词（前面加逗号）
+COMMA_TRIGGERS = sorted([
+    "但是", "不过", "然而", "所以", "因此", "而且", "并且", "或者", "还是",
+    "然后", "接着", "另外", "此外", "同时", "于是", "可是", "只是",
+    "总之", "换句话说", "例如", "比如", "也就是说",
+    "首先", "其次", "最后", "第一", "第二", "第三",
+    "一方面", "另一方面", "除此之外",
+    "结果", "没想到", "忽然", "突然", "后来", "之后",
+    "特别是", "尤其是", "包括", "比如说",
+    "说实话", "说真的", "其实", "实际上", "事实上",
+    "反正", "不管怎样", "无论如何",
+    "反而", "反倒", "相反", "偏偏", "恰恰",
+], key=len, reverse=True)
+
+# 最小分句长度
+MIN_CLAUSE_LEN = 4
 
 
 def restore_punctuation(text, segments=None):
-    """基于规则 + segment 时间间隔恢复标点符号"""
+    """
+    增强标点恢复：
+    1. segment 时间间隔 + 语言规则分句
+    2. 逐句判定句末标点（。？！）
+    3. 句内插入逗号
+    """
     if not text:
         return text
 
-    sentences = []
-    current = ""
-    prev_end = None
+    clauses = _split_into_clauses(text, segments)
 
-    # 有 segment 信息时，用时间间隔辅助断句
-    if segments:
-        for i, seg in enumerate(segments):
-            seg_text = seg["text"].strip()
-            if not seg_text:
-                continue
+    result_parts = []
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        punct = _classify_clause_punctuation(clause)
+        result_parts.append(clause + punct)
 
-            gap = 0
-            if prev_end is not None:
-                gap = seg["start"] - prev_end
+    result = "".join(result_parts)
 
-            prev_end = seg["end"]
-
-            # 间隔 > 1.0 秒 → 前一句加句号，新起一句
-            if gap > 1.0 and current:
-                current = _add_sentence_end_punct(current)
-                sentences.append(current)
-                current = seg_text
-            # 间隔 > 0.4 秒 → 加逗号
-            elif gap > 0.4 and current:
-                current += "，" + seg_text
-            else:
-                if current:
-                    current += seg_text
-                else:
-                    current = seg_text
-
-        if current:
-            current = _add_sentence_end_punct(current)
-            sentences.append(current)
-    else:
-        # 无 segment 信息时，纯规则断句
-        sentences = _rule_based_split(text)
-
-    result = "".join(sentences)
+    # 句内逗号
     result = _insert_commas(result)
-    result = _insert_question_marks(result)
+
+    # 清理异常组合
     result = _cleanup_punctuation(result)
     return result
 
 
-def _add_sentence_end_punct(s):
-    """给句子末尾加合适的标点"""
-    s = s.rstrip("，。！？、；：")
-    if not s:
-        return s
-    last_char = s[-1]
-    if last_char in "。！？":
-        return s
-    # 句末语气词后默认加句号
-    return s + "。"
+def _split_into_clauses(text, segments):
+    """分句：segment 时间间隔 + 语言边界词 + 长度阈值"""
+    if not segments:
+        return _split_by_rules(text)
 
-
-def _rule_based_split(text):
-    """纯规则断句：按句子边界词 + 长度判断"""
-    results = []
+    clauses = []
     current = ""
-    for ch in text:
-        current += ch
-        if ch in SENTENCE_FINAL_PARTICLES and len(current) >= MIN_CLAUSE_LEN:
-            # 语气词可能表示句子结束
-            pass
-        if len(current) >= 15:
-            results.append(current)
-            current = ""
+    prev_end = None
+
+    boundary_words = ("然后", "所以", "但是", "不过", "而且", "另外", "接着", "之后", "于是", "结果")
+
+    for seg in segments:
+        seg_text = seg["text"].strip()
+        if not seg_text:
+            continue
+
+        gap = 0
+        if prev_end is not None:
+            gap = seg["start"] - prev_end
+        prev_end = seg["end"]
+
+        # 信号1: 长停顿 (>1.2s) → 断句
+        if gap > 1.2 and current:
+            clauses.append(current)
+            current = seg_text
+            continue
+
+        # 信号2: 中等停顿 (>0.5s) + 前句句末语气词 → 断句
+        if gap > 0.5 and current and current[-1] in SENTENCE_FINAL:
+            clauses.append(current)
+            current = seg_text
+            continue
+
+        # 信号3: 段首是话题转换词 → 前句断句
+        if current and any(seg_text.startswith(w) for w in boundary_words):
+            clauses.append(current)
+            current = seg_text
+            continue
+
+        # 信号4: 前句过长 (>30字) → 断句
+        if len(current) >= 30:
+            clauses.append(current)
+            current = seg_text
+            continue
+
+        # 默认合并
+        if current:
+            current += seg_text
+        else:
+            current = seg_text
+
     if current:
-        results.append(current)
-    return [_add_sentence_end_punct(s) for s in results]
+        clauses.append(current)
+
+    return clauses
+
+
+def _split_by_rules(text):
+    """无 segment 时的纯规则分句"""
+    clauses = []
+    current = ""
+    boundary_words = ("然后", "所以", "但是", "不过", "而且", "接着", "于是", "结果", "后来")
+
+    i = 0
+    while i < len(text):
+        current += text[i]
+
+        # 句末语气词 + 长度够 → 倾向于断句
+        if text[i] in SENTENCE_FINAL and len(current) >= MIN_CLAUSE_LEN:
+            # 检查后面是否紧跟连接词（说明新句开始）
+            for bw in boundary_words:
+                if text[i+1:].startswith(bw):
+                    clauses.append(current)
+                    current = ""
+                    break
+
+        # 长度上限
+        if len(current) >= 25:
+            clauses.append(current)
+            current = ""
+
+        i += 1
+
+    if current:
+        clauses.append(current)
+
+    return clauses
+
+
+def _classify_clause_punctuation(clause):
+    """判定句子标点类型：。 ？ ！"""
+    clause = clause.rstrip("，。！？、；：\"'…，")
+
+    if _is_question(clause):
+        return "？"
+
+    if _is_exclamation(clause):
+        return "！"
+
+    return "。"
+
+
+def _is_question(clause):
+    """判断是否为疑问句"""
+    # 1. 句末疑问词（吗/呢）
+    if clause and clause[-1] in QUESTION_END:
+        return True
+
+    # 2. 反问结构
+    rhetorical = ("难道", "岂能", "怎能", "何不", "何必", "莫非", "难不成")
+    for r in rhetorical:
+        if r in clause:
+            return True
+
+    # 3. A不A 结构（"好不好" "行不行"）
+    if re.search(r"(.)不\1", clause) or re.search(r"..不..", clause):
+        for qw in ("吗", "呢", "呀", "吧"):
+            if qw in clause:
+                return True
+
+    # 4. 疑问标志词 + 句末非陈述
+    for q in QUESTION_MARKERS:
+        idx = clause.find(q)
+        if idx != -1 and len(clause) - idx < 15:
+            # 排除间接引语
+            indirect = ("知道", "忘记", "记得", "清楚", "明白", "了解", "告诉")
+            prefix = clause[max(0, idx-2):idx]
+            if not any(prefix.endswith(w) for w in indirect):
+                return True
+
+    return False
+
+
+def _is_exclamation(clause):
+    """判断是否为感叹句（评分制）"""
+    score = 0
+
+    # 1. 强烈感叹词
+    for ew in EXCLAMATION_STRONG:
+        if ew in clause:
+            score += 2
+            break
+
+    # 2. 程度副词 + 了/啊/呀 结构（"太好了" "真美啊"）
+    for deg in EXCLAMATION_DEGREE:
+        idx = clause.find(deg)
+        if idx != -1:
+            rest = clause[idx + len(deg):]
+            if any(rest.endswith(e) for e in EXCLAMATION_END) or "了" in rest[:5]:
+                score += 3
+                break
+
+    # 3. 句末感叹语气词 + 短句
+    if clause and clause[-1] in EXCLAMATION_END and len(clause) < 12:
+        score += 1
+
+    # 4. 叠词强调（"好好好" "对对对"）
+    if re.search(r"(.)\1{2,}", clause):
+        score += 1
+
+    # 5. 惊叹词开头
+    interjections = ("天哪", "天啊", "哇", "哎呀", "哎哟", "嘿", "哈哈", "啧啧")
+    for inj in interjections:
+        if clause.startswith(inj):
+            score += 2
+            break
+
+    return score >= 3
 
 
 def _insert_commas(text):
-    """在连接词前插入逗号"""
-    for trigger in sorted(COMMA_TRIGGERS, key=len, reverse=True):
-        # 连接词前如果还没有标点，加逗号
+    """在连接词前 + 长篇中自然停顿点插入逗号"""
+    # 1. 连接词前加逗号
+    for trigger in COMMA_TRIGGERS:
         idx = 0
+        tlen = len(trigger)
         while True:
             idx = text.find(trigger, idx)
             if idx == -1:
                 break
-            # 确保前面不是标点
-            if idx > 0 and text[idx - 1] not in "，。！？、；：\n":
+            if idx > 0 and text[idx - 1] not in "，。！？、；：\n\"\"''…—":
                 text = text[:idx] + "，" + text[idx:]
-                idx += len(trigger) + 1
+                idx += tlen + 1
             else:
-                idx += len(trigger)
+                idx += tlen
+
+    # 2. "是...的" 结构前后可加逗号分隔长句
+    text = re.sub(r"(。)(\S{15,}是\S{5,}的)", r"\1\2", text)
+
+    # 3. 逗号密度：长句 (>18字无标点) 在中间位置补逗号
+    text = _ensure_comma_density(text)
+
     return text
 
 
-def _insert_question_marks(text):
-    """检测疑问句并加问号"""
-    for qword in sorted(QUESTION_WORDS, key=len, reverse=True):
-        if qword in text:
-            # 找该疑问词所在句子的句号，替换为问号
-            idx = text.find(qword)
-            sentence_end = text.find("。", idx)
-            question_word = text.find("吗", idx)
-            question_particle = text.find("呢", idx)
-            candidates = [x for x in [sentence_end, question_word, question_particle] if x != -1]
-            if candidates:
-                end_pos = min(candidates)
-                if end_pos == sentence_end:
-                    text = text[:sentence_end] + "？" + text[sentence_end + 1:]
-    return text
+def _ensure_comma_density(text):
+    """确保长句有合理的逗号密度（约每12字一个停顿点）"""
+    # 按句末标点拆分
+    parts = re.split(r"([。！？\n])", text)
+    result = []
+
+    for i, part in enumerate(parts):
+        if i % 2 == 1 or len(part) < 18:
+            result.append(part)
+            continue
+
+        # 长句 (>18字) 且逗号太少 → 补逗号
+        comma_count = part.count("，")
+        expected_commas = max(0, len(part) // 14 - 1)
+        if comma_count >= expected_commas:
+            result.append(part)
+            continue
+
+        # 找合适插入点（优先在语气词、助词后）
+        chars = list(part)
+        insert_positions = []
+        pause_chars = {"的", "了", "呢", "啊", "呀", "哦", "嘛", "吧", "啦", "后", "时", "中", "上", "下"}
+
+        for j in range(6, len(chars) - 4):
+            if chars[j] in pause_chars and chars[j-1] != "，" and chars[j+1] != "，":
+                insert_positions.append(j)
+
+        # 选最优插入点（均匀分布，避开已有逗号附近）
+        selected = []
+        needed = expected_commas - comma_count
+        step = len(chars) // (needed + 1)
+
+        for k in range(1, needed + 1):
+            target_pos = k * step
+            best = None
+            best_dist = 999
+            for pos in insert_positions:
+                if pos in selected:
+                    continue
+                # 不能在已有逗号旁边的3字内
+                too_close = False
+                for ep in range(max(0, pos-3), min(len(chars), pos+4)):
+                    if chars[ep] == "，":
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+                dist = abs(pos - target_pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    best = pos
+            if best is not None:
+                selected.append(best)
+
+        # 从后往前插入（避免位置偏移）
+        for pos in sorted(selected, reverse=True):
+            chars.insert(pos + 1, "，")
+
+        result.append("".join(chars))
+
+    return "".join(result)
 
 
 def _cleanup_punctuation(text):
     """清理异常标点组合"""
     text = re.sub(r"[，,]{2,}", "，", text)
     text = re.sub(r"[。\.]{2,}", "。", text)
+    text = re.sub(r"[！!]{2,}", "！", text)
+    text = re.sub(r"[？?]{2,}", "？", text)
     text = re.sub(r"[，,]\s*[。\.]", "。", text)
+    text = re.sub(r"[，,]\s*[！!]", "！", text)
+    text = re.sub(r"[，,]\s*[？?]", "？", text)
     text = re.sub(r"[，,]\s*[，,]", "，", text)
+    text = re.sub(r"[。\.]\s*[！!]", "！", text)
+    text = re.sub(r"[。\.]\s*[？?]", "？", text)
+    text = re.sub(r"[？！!？]\s*[。\.]", lambda m: m.group()[0], text)
     return text
-
-
-# ========== 男女声识别（大段聚类） ==========
-
-# 基频相似度阈值：相邻段 f0 中位数相差在此范围内视为同一说话人
-F0_SIMILARITY_THRESHOLD = 35  # Hz
-
-# 性别判定阈值
-MALE_F0_MAX = 165   # 低于此值为男性
-FEMALE_F0_MIN = 180  # 高于此值为女性
-# 165-180 之间为模糊区
-
-
-def _extract_segment_f0(y, sr, seg):
-    """提取单个片段的基频统计信息"""
-    start_sample = int(seg["start"] * sr)
-    end_sample = int(seg["end"] * sr)
-    start_sample = max(0, start_sample)
-    end_sample = min(len(y), end_sample)
-
-    duration = seg["end"] - seg["start"]
-    if duration < 0.5:  # 短于 0.5 秒跳过
-        return None
-
-    chunk = y[start_sample:end_sample]
-
-    try:
-        f0, voiced_flag, voiced_prob = librosa.pyin(
-            chunk, fmin=50, fmax=500, sr=sr, fill_na=0,
-        )
-    except Exception:
-        try:
-            f0 = librosa.yin(chunk, fmin=50, fmax=500, sr=sr)
-            voiced_prob = np.ones_like(f0)
-        except Exception:
-            return None
-
-    voiced_f0 = f0[voiced_prob > 0.6]
-    if len(voiced_f0) < 15:
-        return None
-
-    return {
-        "median": float(np.median(voiced_f0)),
-        "mean": float(np.mean(voiced_f0)),
-        "std": float(np.std(voiced_f0)),
-        "sample_count": len(voiced_f0),
-    }
-
-
-def detect_speaker_gender(audio_path, segments):
-    """
-    基于基频聚类的大段说话人识别：
-    1. 提取每段 f0
-    2. 按 f0 相似度合并相邻段 → 大段（对话轮次）
-    3. 每个大段整体判定男女声
-    """
-    if not HAS_LIBROSA or not segments:
-        return []
-
-    try:
-        y, sr = librosa.load(str(audio_path), sr=16000, mono=True)
-
-        # 第一步：提取每段的 f0 特征
-        f0_features = []
-        for seg in segments:
-            feat = _extract_segment_f0(y, sr, seg)
-            f0_features.append(feat)
-
-        # 第二步：按 f0 相似度合并相邻段为"说话块"
-        blocks = []  # [(start_idx, end_idx, segments, f0s)]
-        current_block = [0]
-        current_f0s = [f0_features[0]["median"]] if f0_features[0] else []
-
-        for i in range(1, len(segments)):
-            prev_f0 = f0_features[i - 1]
-            curr_f0 = f0_features[i]
-
-            # 判断是否应该合并：前后段 f0 中位数接近
-            should_merge = False
-            if prev_f0 and curr_f0:
-                diff = abs(prev_f0["median"] - curr_f0["median"])
-                if diff < F0_SIMILARITY_THRESHOLD:
-                    should_merge = True
-
-            if should_merge:
-                current_block.append(i)
-                current_f0s.append(curr_f0["median"])
-            else:
-                blocks.append((current_block[0], current_block[-1], current_f0s))
-                current_block = [i]
-                current_f0s = [curr_f0["median"]] if curr_f0 else []
-
-        if current_block:
-            blocks.append((current_block[0], current_block[-1], current_f0s))
-
-        # 第三步：合并太小的块到相邻大块
-        blocks = _merge_small_blocks(blocks, segments)
-
-        # 第四步：每个大块整体判定男女声
-        results = []
-        for start_i, end_i, block_f0s in blocks:
-            if not block_f0s:
-                gender = "unknown"
-                confidence = 0.0
-            else:
-                block_median = float(np.median(block_f0s))
-                gender, confidence = _classify_gender(block_median)
-
-            # 大段的文本和时间
-            block_text = "".join(segments[i]["text"] for i in range(start_i, end_i + 1))
-            block_start = segments[start_i]["start"]
-            block_end = segments[end_i]["end"]
-            seg_count = end_i - start_i + 1
-
-            results.append({
-                "start": round(block_start, 2),
-                "end": round(block_end, 2),
-                "text": block_text,
-                "gender": gender,
-                "confidence": round(confidence, 2),
-                "segment_count": seg_count,
-                "duration": round(block_end - block_start, 1),
-            })
-
-        return results
-
-    except Exception as e:
-        print(f"性别检测失败: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return []
-
-
-def _merge_small_blocks(blocks, segments):
-    """把只有 1 个片段的孤立块合并到相邻更大的块"""
-    if len(blocks) <= 1:
-        return blocks
-
-    merged = []
-    i = 0
-    while i < len(blocks):
-        start_i, end_i, f0s = blocks[i]
-        seg_count = end_i - start_i + 1
-
-        if seg_count == 1 and i > 0 and i < len(blocks) - 1:
-            # 孤立小段：合并到 f0 更接近的相邻块
-            curr_f0 = f0s[0] if f0s else 0
-            prev_f0s = blocks[i - 1][2]
-            next_f0s = blocks[i + 1][2]
-
-            prev_median = float(np.median(prev_f0s)) if prev_f0s else 0
-            next_median = float(np.median(next_f0s)) if next_f0s else 0
-
-            if prev_median and (not next_median or abs(curr_f0 - prev_median) <= abs(curr_f0 - next_median)):
-                # 合并到前一个块
-                prev_start, prev_end, prev_f0s_list = merged[-1]
-                merged[-1] = (prev_start, end_i, prev_f0s_list + f0s)
-            elif next_median:
-                # 合并到后一个块（先跳过，下一轮处理）
-                next_start, next_end_list, next_f0s_list = blocks[i + 1]
-                blocks[i + 1] = (start_i, next_end_list, f0s + next_f0s_list)
-            i += 1
-            continue
-
-        merged.append(blocks[i])
-        i += 1
-
-    return merged
-
-
-def _classify_gender(median_f0):
-    """根据基频中位数判定男女声，返回 (性别, 置信度)"""
-    if median_f0 < MALE_F0_MAX:
-        # 远离阈值越远置信度越高
-        conf = min(0.95, 0.5 + (MALE_F0_MAX - median_f0) / 100)
-        return "male", conf
-    elif median_f0 > FEMALE_F0_MIN:
-        conf = min(0.95, 0.5 + (median_f0 - FEMALE_F0_MIN) / 80)
-        return "female", conf
-    else:
-        # 模糊区
-        if median_f0 < 172:
-            return "male", 0.55
-        else:
-            return "female", 0.55
-
-
-def _build_initial_prompt(domain, language):
-    """根据行业构建 initial_prompt，引导 Whisper 正确识别专业术语"""
-    if domain not in DOMAIN_CATEGORIES:
-        return ""
-    keywords = DOMAIN_CATEGORIES[domain]["keywords"]
-
-    # 取前 40 个词构建提示（太多了反而干扰）
-    key_terms = keywords[:40]
-    prompt_parts = []
-
-    if language in ("zh-CN", "zh-TW"):
-        prompt_parts.append("以下是关于" + DOMAIN_CATEGORIES[domain]["name"] + "领域的中文内容。")
-        prompt_parts.append("涉及的专业词汇包括：" + "、".join(key_terms[:20]) + "等。")
-        prompt_parts.append("请准确识别以上专业术语和行业词汇。")
-    elif language == "en":
-        prompt_parts.append("This is content about " + DOMAIN_CATEGORIES[domain]["name"] + ".")
-        prompt_parts.append("Keywords include: " + ", ".join(key_terms[:20]) + ".")
-    elif language == "ja":
-        prompt_parts.append(DOMAIN_CATEGORIES[domain]["name"] + "に関する日本語の内容です。")
-
-    return " ".join(prompt_parts)
-
-
-@app.route("/api/domains")
-def get_domains():
-    """返回行业领域列表"""
-    domains = []
-    for code, info in DOMAIN_CATEGORIES.items():
-        domains.append({
-            "code": code,
-            "name": info["name"],
-            "icon": info["icon"],
-            "desc": info["desc"],
-            "keywords_count": len(info["keywords"]),
-        })
-    return jsonify({"success": True, "domains": domains})
 
 
 @app.route("/api/transcribe", methods=["POST"])
@@ -989,8 +829,6 @@ def transcribe_audio():
 
     video_id = data.get("video_id", "").strip()
     language = data.get("language", "").strip()
-    domain = data.get("domain", "general").strip()
-
     if not video_id:
         return jsonify({"error": "缺少 video_id"}), 400
 
@@ -1005,26 +843,21 @@ def transcribe_audio():
         return jsonify({"error": "音频文件已丢失，请重新上传"}), 400
 
     try:
-        # 加载行业词库，提升 Whisper 识别准确率
-        load_domain_keywords(domain)
-
         # 使用 small 模型（比 base 准确 40%+），支持 base/small/medium 切换
         model_size = data.get("model_size", "small")
         if model_size not in ("base", "small", "medium"):
             model_size = "small"
         model = get_whisper_model(model_size)
 
-        # 构建行业提示词 initial_prompt，引导 Whisper 识别专业术语
-        initial_prompt = _build_initial_prompt(domain, language)
-
         transcribe_opts = {
             "beam_size": 5,
+            "best_of": 3,
             "temperature": 0.0,
             "compression_ratio_threshold": 2.4,
             "logprob_threshold": -1.0,
             "no_speech_threshold": 0.6,
             "condition_on_previous_text": False,
-            "initial_prompt": initial_prompt,
+            "fp16": False,
         }
 
         if language and language != "auto":
@@ -1050,6 +883,9 @@ def transcribe_audio():
                 "start": round(seg["start"], 2),
                 "end": round(seg["end"], 2),
                 "text": seg_text,
+                "confidence": round(seg.get("avg_logprob", -1), 2),
+                "no_speech_prob": round(seg.get("no_speech_prob", 0), 3),
+                "compression_ratio": round(seg.get("compression_ratio", 0), 2),
             })
 
         transcribed_text = result["text"].strip()
@@ -1060,24 +896,9 @@ def transcribe_audio():
         if language in ("zh-CN", "zh-TW", "ja", "ko"):
             transcribed_text = restore_punctuation(transcribed_text, segments)
 
-        # 男女声识别（大段聚类）
-        speaker_blocks = []
-        if HAS_LIBROSA and segments:
-            speaker_blocks = detect_speaker_gender(audio_path, segments)
-
-        # 统计男女声比例
-        male_blocks = [b for b in speaker_blocks if b["gender"] == "male"]
-        female_blocks = [b for b in speaker_blocks if b["gender"] == "female"]
-        male_duration = sum(b["duration"] for b in male_blocks)
-        female_duration = sum(b["duration"] for b in female_blocks)
-        speaker_stats = {
-            "male_blocks": len(male_blocks),
-            "female_blocks": len(female_blocks),
-            "total_blocks": len(speaker_blocks),
-            "male_duration": round(male_duration, 1),
-            "female_duration": round(female_duration, 1),
-            "has_detection": len(speaker_blocks) > 0,
-        }
+        # 中文数字转阿拉伯数字
+        if language in ("zh-CN", "zh-TW"):
+            transcribed_text = convert_chinese_numerals(transcribed_text)
 
         detected_lang = result.get("language", "unknown")
         mapped_lang = WHISPER_LANG_MAP.get(detected_lang)
@@ -1088,11 +909,8 @@ def transcribe_audio():
             "whisper_language": detected_lang,
             "language": mapped_lang or detected_lang,
             "segments": segments,
-            "speaker_blocks": speaker_blocks,
-            "speaker_stats": speaker_stats,
-            "domain": domain,
-            "domain_name": DOMAIN_CATEGORIES.get(domain, {}).get("name", ""),
             "model_size": model_size,
+            "audio_stem": video_id,
         })
 
     except Exception as e:
@@ -1101,9 +919,177 @@ def transcribe_audio():
     finally:
         item = _pending.pop(video_id, None)
         if item:
-            item["audio_path"].unlink(missing_ok=True)
+            # 保留音频 10 分钟供重识别，视频立即删除
+            _audio_cache[item["audio_path"].stem] = {
+                "audio_path": item["audio_path"],
+                "expires_at": time.time() + 600,
+            }
             if item.get("video_path"):
                 item["video_path"].unlink(missing_ok=True)
+
+
+@app.route("/api/re-transcribe", methods=["POST"])
+def re_transcribe_segment():
+    """重识别低置信度片段，使用更高精度参数"""
+    _cleanup_expired()
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请求数据为空"}), 400
+
+    audio_stem = data.get("audio_stem", "").strip()
+    start = data.get("start", 0)
+    end = data.get("end", 0)
+    language = data.get("language", "").strip()
+
+    if not audio_stem:
+        return jsonify({"error": "缺少 audio_stem"}), 400
+    if end <= start:
+        return jsonify({"error": "无效的时间范围"}), 400
+
+    cache_entry = _audio_cache.get(audio_stem)
+    if not cache_entry:
+        return jsonify({"error": "音频已过期，请重新上传"}), 400
+
+    audio_path = cache_entry["audio_path"]
+    if not audio_path.exists():
+        _audio_cache.pop(audio_stem, None)
+        return jsonify({"error": "音频文件已丢失"}), 400
+
+    try:
+        # 加载音频并裁剪目标片段（前后各扩展 0.3s 缓冲）
+        y, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+        margin = int(0.3 * sr)
+        start_sample = max(0, int(start * sr) - margin)
+        end_sample = min(len(y), int(end * sr) + margin)
+        chunk = y[start_sample:end_sample]
+
+        if len(chunk) < sr * 0.3:
+            return jsonify({"error": "片段太短"}), 400
+
+        # 保存临时音频
+        import tempfile
+        import soundfile as sf
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            sf.write(tmp.name, chunk, sr)
+            tmp_path = tmp.name
+
+        # 高精度重识别
+        model = get_whisper_model("small")
+        opts = {
+            "beam_size": 15,
+            "best_of": 10,
+            "temperature": (0.0, 0.1, 0.2),
+            "patience": 1.5,
+            "compression_ratio_threshold": 2.4,
+            "logprob_threshold": -1.0,
+            "no_speech_threshold": 0.3,
+            "condition_on_previous_text": False,
+            "fp16": False,
+        }
+        if language and language != "auto":
+            for wcode, mcode in WHISPER_LANG_MAP.items():
+                if mcode == language:
+                    opts["language"] = wcode
+                    break
+
+        result = model.transcribe(tmp_path, **opts)
+        Path(tmp_path).unlink(missing_ok=True)
+
+        text = result["text"].strip()
+        if language == "zh-CN":
+            text = convert_to_simplified(text)
+
+        return jsonify({
+            "success": True,
+            "text": text,
+            "segments": [{
+                "start": seg["start"], "end": seg["end"],
+                "text": seg["text"].strip(),
+                "confidence": round(seg.get("avg_logprob", -1), 2),
+            } for seg in result["segments"] if seg["text"].strip()],
+        })
+
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": f"重识别失败: {str(e)}"}), 500
+
+
+@app.route("/api/tts", methods=["POST"])
+def text_to_speech():
+    """将翻译文本转为语音，使用目标语言的 TTS 声音"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请求数据为空"}), 400
+
+    text = data.get("text", "").strip()
+    target_lang = data.get("target_lang", "en").strip()
+
+    if not text:
+        return jsonify({"error": "请输入要转换的文本"}), 400
+    if len(text) > 2000:
+        text = text[:2000]
+
+    # 语言 → edge-tts 声音映射
+    TTS_VOICES = {
+        "en": "en-US-AriaNeural",
+        "zh-CN": "zh-CN-XiaoxiaoNeural",
+        "zh-TW": "zh-TW-HsiaoChenNeural",
+        "ja": "ja-JP-NanamiNeural",
+        "ko": "ko-KR-SunHiNeural",
+        "fr": "fr-FR-DeniseNeural",
+        "de": "de-DE-KatjaNeural",
+        "es": "es-ES-ElviraNeural",
+        "pt": "pt-BR-FranciscaNeural",
+        "ru": "ru-RU-SvetlanaNeural",
+        "ar": "ar-SA-ZariyahNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "th": "th-TH-PremwadeeNeural",
+        "vi": "vi-VN-HoaiMyNeural",
+        "id": "id-ID-GadisNeural",
+    }
+
+    voice = TTS_VOICES.get(target_lang, "en-US-AriaNeural")
+
+    try:
+        import asyncio
+        import tempfile
+
+        async def _gen_tts():
+            communicate = edge_tts.Communicate(text, voice)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                await communicate.save(tmp.name)
+                return tmp.name
+
+        # 在已有 event loop 中运行
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _gen_tts())
+                tmp_path = future.result(timeout=60)
+        else:
+            tmp_path = asyncio.run(_gen_tts())
+
+        # 读取为 base64
+        import base64
+        with open(tmp_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+        Path(tmp_path).unlink(missing_ok=True)
+
+        return jsonify({
+            "success": True,
+            "audio_base64": audio_b64,
+            "voice": voice,
+            "format": "mp3",
+        })
+
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": f"TTS 生成失败: {str(e)}"}), 500
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -1386,9 +1372,45 @@ def translate_text():
         return jsonify({"error": f"不支持的目标语言: {target}"}), 400
 
     try:
-        from deep_translator import GoogleTranslator
-        translator = GoogleTranslator(source=source, target=target)
-        result = translator.translate(text)
+        import argostranslate.translate
+
+        # 映射语言代码到 Argos 支持的代码
+        LANG_MAP = {
+            "zh-CN": "zh", "zh-TW": "zt", "en": "en", "ja": "ja",
+            "ko": "ko", "fr": "fr", "de": "de", "es": "es",
+            "ru": "ru", "pt": "pt", "ar": "ar", "hi": "hi",
+            "th": "th", "vi": "vi", "id": "id", "it": "it",
+            "nl": "nl", "pl": "pl", "sv": "sv", "tr": "tr",
+        }
+        from_code = LANG_MAP.get(source, "auto")
+        to_code = LANG_MAP.get(target, "en")
+
+        # Argos 不支持 auto，自动检测源语言
+        if from_code == "auto":
+            from_code = "zh" if any("一" <= c <= "鿿" for c in text) else "en"
+
+        # 获取已安装的语言
+        installed = argostranslate.translate.get_installed_languages()
+        from_lang = next((l for l in installed if l.code == from_code), None)
+        to_lang = next((l for l in installed if l.code == to_code), None)
+
+        if not from_lang or not to_lang:
+            # 回退到 MyMemory API
+            import requests as req
+            lang_pair = f"{from_code}|{to_code}" if from_code != "auto" else target
+            resp = req.get(
+                "https://api.mymemory.translated.net/get",
+                params={"q": text, "langpair": lang_pair},
+                timeout=15,
+            )
+            data = resp.json()
+            result = data.get("responseData", {}).get("translatedText", "")
+        else:
+            translation = from_lang.get_translation(to_lang)
+            result = translation.translate(text)
+
+        if not result or result.strip() == text.strip():
+            return jsonify({"error": "翻译失败，请稍后重试"}), 500
 
         return jsonify({
             "success": True,
@@ -1398,26 +1420,12 @@ def translate_text():
         })
 
     except Exception as e:
-        if len(text) > 5000:
-            try:
-                sentences = text.replace("\n", " ").split("。")
-                translated_parts = []
-                for sentence in sentences:
-                    sentence = sentence.strip()
-                    if sentence:
-                        part = GoogleTranslator(source=source, target=target).translate(sentence)
-                        translated_parts.append(part)
-                result = "。".join(translated_parts)
-                return jsonify({
-                    "success": True,
-                    "translated_text": result,
-                    "source_lang": source,
-                    "target_lang": target,
-                })
-            except Exception:
-                pass
+        return jsonify({"error": f"翻译失败: {str(e)[:80]}"}), 500
 
-        return jsonify({"error": f"翻译失败: {str(e)}"}), 500
+
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
 
 
 @app.route("/api/health")

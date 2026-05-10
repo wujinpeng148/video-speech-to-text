@@ -16,9 +16,6 @@ const reUploadBtn = document.getElementById("reUploadBtn");
 const sourceText = document.getElementById("sourceText");
 const wordCount = document.getElementById("wordCount");
 const proofreadBtn = document.getElementById("proofreadBtn");
-const speakerSection = document.getElementById("speakerSection");
-const speakerTimeline = document.getElementById("speakerTimeline");
-const dismissSpeakerBtn = document.getElementById("dismissSpeakerBtn");
 const proofreadPanel = document.getElementById("proofreadPanel");
 const proofreadSummary = document.getElementById("proofreadSummary");
 const proofreadList = document.getElementById("proofreadList");
@@ -35,18 +32,19 @@ const resultArea = document.getElementById("resultArea");
 const resultPlaceholder = document.getElementById("resultPlaceholder");
 const resultContent = document.getElementById("resultContent");
 const translateProgress = document.getElementById("translateProgress");
+const playTtsBtn = document.getElementById("playTtsBtn");
+const ttsAudio = document.getElementById("ttsAudio");
 const copyResultBtn = document.getElementById("copyResultBtn");
 const clearResultBtn = document.getElementById("clearResultBtn");
 
-const domainGrid = document.getElementById("domainGrid");
-
+const filmstripContainer = document.getElementById("filmstripContainer");
+const filmstrip = document.getElementById("filmstrip");
 const toast = document.getElementById("toast");
 
-let currentVideoFile = null;
-let currentVideoId = null;
-let detectedLanguageCode = null;
-let translatedText = "";
-let currentDomain = "general";  // 默认通用日常
+// ========== 多视频状态 ==========
+let videos = [];           // 视频条目数组
+let activeVideoId = null;  // 当前选中的视频 id
+let isProcessing = false;  // 队列是否在处理中
 
 // ========== Toast 提示 ==========
 let toastTimer;
@@ -56,97 +54,6 @@ function showToast(message, duration = 2500) {
     toast.classList.add("show");
     toastTimer = setTimeout(() => toast.classList.remove("show"), duration);
 }
-
-// ========== 行业领域选择 ==========
-async function loadDomains() {
-    try {
-        const response = await fetch("/api/domains");
-        const data = await response.json();
-        if (data.success && data.domains) {
-            renderDomainCards(data.domains);
-        }
-    } catch (error) {
-        console.error("Failed to load domains:", error);
-        domainGrid.innerHTML = '<div class="domain-card">加载失败，使用默认设置</div>';
-    }
-}
-
-function renderDomainCards(domains) {
-    domainGrid.innerHTML = "";
-    domains.forEach(domain => {
-        const card = document.createElement("div");
-        card.className = `domain-card${domain.code === currentDomain ? " selected" : ""}`;
-        card.dataset.code = domain.code;
-        card.innerHTML = `
-            <span class="domain-icon">${domain.icon}</span>
-            <div class="domain-name">${domain.name}</div>
-            <div class="domain-desc">${domain.desc}</div>
-            <div class="domain-count">${domain.keywords_count} 个专业词汇</div>
-        `;
-        card.addEventListener("click", () => selectDomain(domain.code));
-        domainGrid.appendChild(card);
-    });
-}
-
-function selectDomain(code) {
-    currentDomain = code;
-    document.querySelectorAll(".domain-card").forEach(c => {
-        c.classList.toggle("selected", c.dataset.code === code);
-    });
-    showToast(`已选择「${DOMAIN_NAMES[code] || code}」领域`);
-}
-
-// 域名映射（供选择时展示）
-const DOMAIN_NAMES = {};
-fetch("/api/domains").then(r => r.json()).then(data => {
-    if (data.domains) data.domains.forEach(d => { DOMAIN_NAMES[d.code] = d.name; });
-});
-
-// ========== 行业选择折叠/展开 ==========
-function collapseDomainSection() {
-    const section = document.getElementById("domainSection");
-    const toggleBtn = document.getElementById("domainToggleBtn");
-    if (!section || section.classList.contains("collapsed")) return;
-
-    section.style.maxHeight = section.scrollHeight + "px";
-    requestAnimationFrame(() => {
-        section.style.maxHeight = "0";
-        section.style.opacity = "0";
-        section.style.marginBottom = "0";
-        section.style.overflow = "hidden";
-    });
-    section.classList.add("collapsed");
-
-    // 显示展开按钮
-    if (toggleBtn) toggleBtn.classList.remove("hidden");
-}
-
-function expandDomainSection() {
-    const section = document.getElementById("domainSection");
-    const toggleBtn = document.getElementById("domainToggleBtn");
-    if (!section) return;
-
-    section.classList.remove("collapsed", "hidden");
-    section.style.maxHeight = section.scrollHeight + "px";
-    section.style.opacity = "1";
-    section.style.marginBottom = "16px";
-    section.style.overflow = "visible";
-
-    // 动画完成后清除固定高度
-    section.addEventListener("transitionend", function handler() {
-        section.style.maxHeight = "";
-        section.removeEventListener("transitionend", handler);
-    });
-
-    // 隐藏展开按钮
-    if (toggleBtn) toggleBtn.classList.add("hidden");
-}
-
-// 绑定展开按钮
-document.getElementById("domainToggleBtn").addEventListener("click", expandDomainSection);
-
-// 页面加载时加载域名
-loadDomains();
 
 // ========== 上传区域事件 ==========
 uploadArea.addEventListener("click", () => videoInput.click());
@@ -163,33 +70,33 @@ uploadArea.addEventListener("dragleave", () => {
 uploadArea.addEventListener("drop", (e) => {
     e.preventDefault();
     uploadArea.classList.remove("dragover");
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("video/")) {
-        handleVideoUpload(file);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("video/"));
+    if (files.length > 0) {
+        handleFiles(files);
     } else {
         showToast("请拖入视频文件");
     }
 });
 
 videoInput.addEventListener("change", () => {
-    const file = videoInput.files[0];
-    if (file) handleVideoUpload(file);
+    const files = Array.from(videoInput.files).filter(f => f.type.startsWith("video/"));
+    if (files.length > 0) handleFiles(files);
 });
 
 reUploadBtn.addEventListener("click", () => {
-    if (sourceText.value.trim() || translatedText) {
-        if (!confirm("确定重新上传吗？\n\n当前识别文本和翻译结果将被清空。")) return;
+    const hasContent = videos.some(v => v.transcriptionText || v.translatedText);
+    if (hasContent || sourceText.value.trim()) {
+        if (!confirm("确定重新上传吗？\n\n所有视频的识别文本和翻译结果将被清空。")) return;
     }
-    resetUpload();
-    // 重新展开行业选择
-    expandDomainSection();
+    resetAll();
 });
 
+
 // ========== 视频上传处理 ==========
-function resetUpload() {
-    currentVideoFile = null;
-    currentVideoId = null;
-    detectedLanguageCode = null;
+function resetAll() {
+    videos = [];
+    activeVideoId = null;
+    isProcessing = false;
     videoInput.value = "";
     uploadArea.classList.remove("hidden");
     uploadProgress.classList.add("hidden");
@@ -203,118 +110,199 @@ function resetUpload() {
     translateBtn.disabled = true;
     proofreadBtn.disabled = true;
     proofreadPanel.classList.add("hidden");
-    speakerSection.classList.add("hidden");
+
     updateWordCount();
     clearResult();
+    renderFilmstrip();
+    const oldBanner = document.querySelector(".alert-banner");
+    if (oldBanner) oldBanner.remove();
 }
 
-// 步骤1：上传视频 → 检测语言
-async function handleVideoUpload(file) {
-    if (file.size > 500 * 1024 * 1024) {
-        showToast("文件大小不能超过 500MB");
-        return;
-    }
+// ========== 缩略图生成 ==========
+function generateThumbnail(file) {
+    return new Promise((resolve) => {
+        const video = document.createElement("video");
+        const canvas = document.createElement("canvas");
+        video.preload = "metadata";
+        video.muted = true;
+        video.playsInline = true;
 
-    currentVideoFile = file;
+        const cleanup = () => { URL.revokeObjectURL(video.src); };
 
-    uploadArea.classList.add("hidden");
-    uploadProgress.classList.remove("hidden");
-    progressText.textContent = "正在上传视频并检测语言...";
+        video.onloadeddata = () => { video.currentTime = 1; };
+        video.onseeked = () => {
+            const vw = video.videoWidth || 280;
+            const vh = video.videoHeight || 160;
+            const maxWidth = 280;
+            canvas.width = maxWidth;
+            canvas.height = Math.round(maxWidth * vh / vw);
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL("image/jpeg", 0.7));
+            cleanup();
+        };
+        video.onerror = () => {
+            resolve(null);
+            cleanup();
+        };
 
-    const formData = new FormData();
-    formData.append("video", file);
-
-    try {
-        const response = await fetch("/api/detect-language", {
-            method: "POST",
-            body: formData,
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || "语言检测失败");
-        }
-
-        currentVideoId = data.video_id;
-        detectedLanguageCode = data.detected.mapped_code;
-
-        // 隐藏上传进度，显示语言检测结果
-        uploadProgress.classList.add("hidden");
-        langDetectResult.classList.remove("hidden");
-
-        const probPercent = Math.round(data.detected.probability * 100);
-        detectedLangName.textContent = data.detected.name;
-        detectedConfidence.textContent = "置信度 " + probPercent + "%";
-
-        // 设置语言选择器默认值
-        if (data.detected.mapped_code) {
-            for (const opt of manualLangSelect.options) {
-                if (opt.value === data.detected.mapped_code) {
-                    opt.selected = true;
-                    break;
-                }
+        // 超时回退
+        setTimeout(() => {
+            if (video.readyState < 2) {
+                resolve(null);
+                cleanup();
             }
-        }
+        }, 3000);
 
-        // 自动设置翻译源语言
-        if (data.detected.mapped_code) {
-            sourceLang.value = data.detected.mapped_code;
-        }
-
-    } catch (error) {
-        uploadProgress.classList.add("hidden");
-        uploadArea.classList.remove("hidden");
-        showToast(`语言检测失败: ${error.message}`);
-        console.error("Detect error:", error);
-    }
+        video.src = URL.createObjectURL(file);
+    });
 }
 
-// 步骤2：确认语言 → 开始转录
+// ========== 视频条目管理 ==========
+function createVideoEntry(file, thumbnail) {
+    return {
+        id: "pending-" + Date.now() + "-" + Math.random().toString(36).substr(2, 6),
+        file: file,
+        fileName: file.name,
+        thumbnail: thumbnail,
+        status: "pending",
+        detectedLanguage: null,
+        languageProbabilities: [],
+        transcriptionText: "",
+        segments: [],
+        translatedText: "",
+        error: null,
+        modelSize: null,
+    };
+}
+
+function findVideoIndex(videoId) {
+    return videos.findIndex(v => v.id === videoId);
+}
+
+function findVideoById(videoId) {
+    return videos.find(v => v.id === videoId);
+}
+
+function getActiveVideo() {
+    if (!activeVideoId) return null;
+    return findVideoById(activeVideoId) || null;
+}
+
+function updateVideoStatus(videoId, status, extras = {}) {
+    const v = findVideoById(videoId);
+    if (!v) return;
+    v.status = status;
+    Object.assign(v, extras);
+    renderFilmstrip();
+    updateUIForActiveVideo();
+}
+
+function removeVideo(videoId) {
+    const idx = findVideoIndex(videoId);
+    if (idx === -1) return;
+    const wasActive = (activeVideoId === videoId);
+    videos.splice(idx, 1);
+    if (wasActive) {
+        if (videos.length > 0) {
+            selectVideo(videos[Math.min(idx, videos.length - 1)].id);
+        } else {
+            activeVideoId = null;
+            clearDisplayedContent();
+            uploadArea.classList.remove("hidden");
+        
+        }
+    }
+    renderFilmstrip();
+}
+
+// ========== 多文件入口 ==========
+async function handleFiles(files) {
+    const fileArray = Array.from(files);
+    const validFiles = fileArray.filter(f => {
+        if (f.size > 500 * 1024 * 1024) {
+            showToast(`"${f.name}" 超过 500MB 限制，已跳过`);
+            return false;
+        }
+        if (!f.type.startsWith("video/")) {
+            showToast(`"${f.name}" 不是视频文件，已跳过`);
+            return false;
+        }
+        return true;
+    });
+
+    if (validFiles.length === 0) return;
+
+    // 隐藏上传区域
+    uploadArea.classList.add("hidden");
+
+    // 生成缩略图（并行）
+    const thumbnails = await Promise.all(
+        validFiles.map(f => generateThumbnail(f))
+    );
+
+    // 添加到数组
+    validFiles.forEach((file, i) => {
+        const entry = createVideoEntry(file, thumbnails[i]);
+        videos.push(entry);
+    });
+
+    renderFilmstrip();
+
+    // 统一走队列自动处理
+    showToast(`已添加 ${validFiles.length} 个视频，开始自动处理...`);
+    startProcessingQueue();
+
+    videoInput.value = "";
+}
+
+// 步骤2：确认语言 → 开始转录（单视频手动模式）
 startTranscribeBtn.addEventListener("click", async () => {
-    if (!currentVideoId) {
-        showToast("请先上传视频");
+    const pendingVideo = videos.find(v => v.status === "pending" && v.detectedLanguage);
+    if (!pendingVideo) {
+        showToast("请先上传视频并完成语言检测");
         return;
     }
 
-    // 用户手动选择的语言优先，否则用检测到的语言
-    let language = manualLangSelect.value || detectedLanguageCode || "auto";
+    let language = manualLangSelect.value || pendingVideo.detectedLanguage?.mapped_code || "auto";
 
     langDetectResult.classList.add("hidden");
     transcribeProgress.classList.remove("hidden");
 
     try {
+        // 更新状态为 transcribing
+        updateVideoStatus(pendingVideo.id, "transcribing");
+
         const response = await fetch("/api/transcribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                video_id: currentVideoId,
+                video_id: pendingVideo.id,
                 language: language,
-                domain: currentDomain,
                 model_size: "small",
             }),
         });
 
         const data = await response.json();
 
-        if (!response.ok) {
-            throw new Error(data.error || "语音识别失败");
-        }
+        if (!response.ok) throw new Error(data.error || "语音识别失败");
 
-        // 显示转录结果
-        sourceText.value = data.text;
-        sourceText.disabled = false;
-        sourceLang.disabled = false;
-        translateBtn.disabled = false;
-        proofreadBtn.disabled = false;
-        updateWordCount();
+        // 更新视频条目
+        updateVideoStatus(pendingVideo.id, "done", {
+            transcriptionText: data.text,
+            segments: data.segments || [],
+            modelSize: data.model_size,
+            audioStem: data.audio_stem || pendingVideo.id,
+        });
 
-        // 更新上传状态
+        // 选中该视频
+        selectVideo(pendingVideo.id);
+
+        // UI 更新
         transcribeProgress.classList.add("hidden");
         uploadInfo.classList.remove("hidden");
-        fileName.textContent = currentVideoFile ? currentVideoFile.name : "视频";
+        fileName.textContent = pendingVideo.fileName;
 
-        // 同步检测到的语言到翻译源语言
         if (data.language && data.language !== "unknown") {
             const mapped = data.language;
             if (sourceLang.querySelector(`option[value="${mapped}"]`)) {
@@ -323,25 +311,282 @@ startTranscribeBtn.addEventListener("click", async () => {
         }
 
         showToast(`识别完成！共 ${data.text.length} 个字符，模型: ${data.model_size || 'small'}`);
-
-        // 折叠行业选择（可重新展开）
-        collapseDomainSection();
-
-        // 渲染说话人标注（大段）
-        if (data.speaker_stats && data.speaker_stats.has_detection) {
-            renderSpeakerTimeline(data.speaker_blocks, data.speaker_stats);
-        }
-
-        // 自动触发校对
         setTimeout(() => performProofread(true), 300);
 
     } catch (error) {
+        updateVideoStatus(pendingVideo.id, "error", { error: error.message });
         transcribeProgress.classList.add("hidden");
         langDetectResult.classList.remove("hidden");
         showToast(`语音识别失败: ${error.message}`);
-        console.error("Transcribe error:", error);
     }
 });
+
+// ========== 胶片条渲染 ==========
+function renderFilmstrip() {
+    filmstrip.innerHTML = "";
+
+    if (videos.length === 0) {
+        filmstripContainer.classList.add("hidden");
+    
+        return;
+    }
+
+    filmstripContainer.classList.remove("hidden");
+
+    videos.forEach(v => {
+        const card = document.createElement("div");
+        card.className = `video-thumbnail${v.id === activeVideoId ? " active" : ""}${v.status === "error" ? " error" : ""}`;
+        card.dataset.videoId = v.id;
+        card.title = v.fileName;
+
+        // 缩略图
+        const imgWrap = document.createElement("div");
+        imgWrap.className = "thumb-img-wrap";
+        if (v.thumbnail) {
+            const img = document.createElement("img");
+            img.src = v.thumbnail;
+            img.alt = v.fileName;
+            imgWrap.appendChild(img);
+        } else {
+            const placeholder = document.createElement("span");
+            placeholder.className = "thumb-placeholder";
+            placeholder.textContent = "🎬";
+            imgWrap.appendChild(placeholder);
+        }
+        card.appendChild(imgWrap);
+
+        // 状态徽章
+        if (v.status !== "pending") {
+            const badge = document.createElement("span");
+            badge.className = `status-badge ${v.status}`;
+            const badgeText = {
+                detecting: "检测中", transcribing: "识别中",
+                done: "✓", error: "✗"
+            };
+            badge.textContent = badgeText[v.status] || "";
+            card.appendChild(badge);
+        }
+
+        // 信息栏
+        const info = document.createElement("div");
+        info.className = "thumb-info";
+        const nameEl = document.createElement("div");
+        nameEl.className = "thumb-name";
+        nameEl.textContent = v.fileName;
+        const statusEl = document.createElement("div");
+        statusEl.className = "thumb-status";
+        const statusText = {
+            pending: "等待处理",
+            detecting: "语言检测中...",
+            transcribing: "语音识别中...",
+            done: `已完成 (${v.transcriptionText.length}字)`,
+            error: v.error || "处理失败"
+        };
+        statusEl.textContent = statusText[v.status] || "";
+        info.appendChild(nameEl);
+        info.appendChild(statusEl);
+        card.appendChild(info);
+
+        // 删除按钮（处理中不可删）
+        if (v.status !== "detecting" && v.status !== "transcribing") {
+            const removeBtn = document.createElement("button");
+            removeBtn.className = "thumb-remove";
+            removeBtn.textContent = "×";
+            removeBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                removeVideo(v.id);
+            });
+            card.appendChild(removeBtn);
+        }
+
+        // 点击选中
+        card.addEventListener("click", () => {
+            if (v.status === "done" || v.status === "error") {
+                selectVideo(v.id);
+            }
+        });
+
+        filmstrip.appendChild(card);
+    });
+
+    // "+" 添加更多
+    const addCard = document.createElement("div");
+    addCard.className = "video-thumbnail add-more";
+    addCard.innerHTML = `<span class="add-icon">+</span><span>添加视频</span>`;
+    addCard.addEventListener("click", () => videoInput.click());
+    filmstrip.appendChild(addCard);
+}
+
+// ========== 视频切换 ==========
+function selectVideo(videoId) {
+    // 保存当前编辑内容
+    if (activeVideoId) {
+        const prev = findVideoById(activeVideoId);
+        if (prev && prev.status === "done") {
+            prev.transcriptionText = sourceText.value;
+        }
+    }
+
+    activeVideoId = videoId;
+    const v = findVideoById(videoId);
+    if (!v) return;
+
+    sourceText.value = v.transcriptionText;
+    sourceText.disabled = (v.status !== "done");
+    sourceLang.disabled = (v.status !== "done");
+    translateBtn.disabled = !v.transcriptionText.trim();
+    proofreadBtn.disabled = !v.transcriptionText.trim();
+    updateWordCount();
+
+    // 语言同步
+    if (v.detectedLanguage?.mapped_code) {
+        if (sourceLang.querySelector(`option[value="${v.detectedLanguage.mapped_code}"]`)) {
+            sourceLang.value = v.detectedLanguage.mapped_code;
+        }
+    }
+
+    // 翻译结果
+    if (v.translatedText) {
+        resultContent.textContent = v.translatedText;
+        resultContent.classList.remove("hidden");
+        resultPlaceholder.classList.add("hidden");
+        playTtsBtn.disabled = false;
+        // 切换视频时重置 TTS（不同视频需要重新生成语音）
+        ttsAudio.classList.add("hidden");
+        playTtsBtn.textContent = "🔊 播放";
+        ttsLoaded = false;
+    } else {
+        resultContent.classList.add("hidden");
+        resultPlaceholder.classList.remove("hidden");
+        resultPlaceholder.textContent = "翻译结果将显示在这里";
+        playTtsBtn.disabled = true;
+        playTtsBtn.textContent = "🔊 播放";
+        ttsLoaded = false;
+    }
+
+    // 关闭校对面板
+    proofreadPanel.classList.add("hidden");
+    const oldBanner = document.querySelector(".alert-banner");
+    if (oldBanner) oldBanner.remove();
+
+    // 更新上传信息
+    uploadInfo.classList.remove("hidden");
+    fileName.textContent = v.fileName;
+
+    // 隐藏语言检测面板
+    langDetectResult.classList.add("hidden");
+
+    renderFilmstrip();
+}
+
+function clearDisplayedContent() {
+    activeVideoId = null;
+    sourceText.value = "";
+    sourceText.disabled = true;
+    sourceLang.disabled = true;
+    translateBtn.disabled = true;
+    proofreadBtn.disabled = true;
+    proofreadPanel.classList.add("hidden");
+    clearResult();
+    uploadInfo.classList.add("hidden");
+    updateWordCount();
+    const oldBanner = document.querySelector(".alert-banner");
+    if (oldBanner) oldBanner.remove();
+}
+
+function updateUIForActiveVideo() {
+    if (!activeVideoId) return;
+    const v = getActiveVideo();
+    if (!v) return;
+    if (document.activeElement !== sourceText) {
+        sourceText.value = v.transcriptionText;
+    }
+    updateWordCount();
+}
+
+// ========== 队列顺序处理 ==========
+async function startProcessingQueue() {
+    if (isProcessing) return;
+    isProcessing = true;
+
+    let pendingVideos = videos.filter(v => v.status === "pending");
+
+    while (pendingVideos.length > 0) {
+        for (const v of pendingVideos) {
+            try {
+                // 步骤1：上传 + 语言检测
+                updateVideoStatus(v.id, "detecting");
+                const detectResult = await detectLanguageForVideo(v);
+                if (!detectResult || detectResult.error) {
+                    throw new Error(detectResult?.error || "语言检测失败");
+                }
+
+                // 更新为后端真实的 video_id
+                const oldId = v.id;
+                v.id = detectResult.video_id;
+                v.detectedLanguage = detectResult.detected;
+                v.languageProbabilities = detectResult.all_languages || [];
+                if (activeVideoId === oldId) activeVideoId = v.id;
+
+                // 步骤2：转录
+                updateVideoStatus(v.id, "transcribing");
+                const transResult = await transcribeVideo(v);
+                if (!transResult || transResult.error) {
+                    throw new Error(transResult?.error || "语音识别失败");
+                }
+
+                updateVideoStatus(v.id, "done", {
+                    transcriptionText: transResult.text,
+                    segments: transResult.segments || [],
+                    modelSize: transResult.model_size,
+                    audioStem: transResult.audio_stem || v.id,
+                });
+
+                // 首个完成的视频自动选中
+                if (!activeVideoId) {
+                    selectVideo(v.id);
+                    uploadInfo.classList.remove("hidden");
+                    fileName.textContent = v.fileName;
+                }
+
+            } catch (err) {
+                updateVideoStatus(v.id, "error", { error: err.message });
+                console.error(`视频 "${v.fileName}" 处理失败:`, err);
+            }
+        }
+
+        // 检查是否有在处理期间新加入的视频
+        pendingVideos = videos.filter(v => v.status === "pending");
+    }
+
+    isProcessing = false;
+    showToast("所有视频处理完毕！");
+}
+
+async function detectLanguageForVideo(videoEntry) {
+    const formData = new FormData();
+    formData.append("video", videoEntry.file);
+
+    const resp = await fetch("/api/detect-language", {
+        method: "POST",
+        body: formData,
+    });
+    return await resp.json();
+}
+
+async function transcribeVideo(videoEntry) {
+    const language = videoEntry.detectedLanguage?.mapped_code || "auto";
+    const resp = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            video_id: videoEntry.id,
+            language: language,
+            model_size: "medium",
+        }),
+    });
+    return await resp.json();
+}
 
 // ========== 文本校对 ==========
 proofreadBtn.addEventListener("click", () => performProofread(false));
@@ -630,73 +875,6 @@ dismissProofreadBtn.addEventListener("click", () => {
     proofreadPanel.classList.add("hidden");
 });
 
-// ========== 说话人标注 ==========
-function renderSpeakerTimeline(blocks, stats) {
-    speakerTimeline.innerHTML = "";
-
-    if (!blocks || blocks.length === 0) return;
-
-    blocks.forEach((block, i) => {
-        const gender = block.gender || "unknown";
-        const confidence = block.confidence || 0;
-        const segCount = block.segment_count || 1;
-
-        let icon = "🤷";
-        let label = "未知";
-        let blockLabel = "";
-        if (gender === "male") {
-            icon = "👨";
-            label = "男";
-            blockLabel = "男声";
-        } else if (gender === "female") {
-            icon = "👩";
-            label = "女";
-            blockLabel = "女声";
-        }
-
-        const item = document.createElement("div");
-        item.className = `speaker-segment ${gender}`;
-        item.title = `点击定位到原文`;
-        item.innerHTML = `
-            <span class="gender-icon">${icon}</span>
-            <span class="segment-time">${formatTime(block.start)} - ${formatTime(block.end)}</span>
-            <span class="segment-text" title="${escapeHtml(block.text)}">${escapeHtml(block.text.substring(0, 60))}${block.text.length > 60 ? '...' : ''}</span>
-            <span class="segment-confidence">${blockLabel} ${Math.round(confidence * 100)}% · ${block.duration}秒 · ${segCount}句</span>
-        `;
-
-        // 点击定位到原文
-        item.addEventListener("click", () => {
-            const fullText = sourceText.value;
-            const idx = fullText.indexOf(block.text.substring(0, 20));
-            if (idx !== -1) {
-                sourceText.focus();
-                sourceText.setSelectionRange(idx, idx + Math.min(block.text.length, fullText.length - idx));
-                const textBefore = fullText.substring(0, idx);
-                const lineHeight = parseFloat(getComputedStyle(sourceText).lineHeight) || 22;
-                const paddingTop = parseFloat(getComputedStyle(sourceText).paddingTop) || 16;
-                const lines = textBefore.split("\n").length;
-                sourceText.scrollTop = Math.max(0, (lines - 1) * lineHeight + paddingTop - 60);
-                sourceText.classList.remove("highlight-pulse");
-                void sourceText.offsetWidth;
-                sourceText.classList.add("highlight-pulse");
-            }
-        });
-
-        speakerTimeline.appendChild(item);
-    });
-
-    // 更新标题显示统计
-    const header = speakerSection.querySelector(".section-header h3");
-    if (header && stats) {
-        let statsText = "🎤 说话人标注";
-        if (stats.male_blocks > 0) statsText += ` · 👨${stats.male_blocks}段男声 (${stats.male_duration}秒)`;
-        if (stats.female_blocks > 0) statsText += ` · 👩${stats.female_blocks}段女声 (${stats.female_duration}秒)`;
-        header.textContent = statsText;
-    }
-
-    speakerSection.classList.remove("hidden");
-}
-
 function escapeHtml(str) {
     const div = document.createElement("div");
     div.textContent = str;
@@ -709,15 +887,18 @@ function formatTime(seconds) {
     return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-dismissSpeakerBtn.addEventListener("click", () => {
-    speakerSection.classList.add("hidden");
-});
-
 // ========== 文本编辑区 ==========
 sourceText.addEventListener("input", () => {
     updateWordCount();
     translateBtn.disabled = !sourceText.value.trim();
     proofreadBtn.disabled = !sourceText.value.trim();
+    // 保存编辑到当前视频
+    const active = getActiveVideo();
+    if (active && active.status === "done") {
+        active.transcriptionText = sourceText.value;
+        active.translatedText = "";  // 编辑后翻译失效
+        clearResult();
+    }
 });
 
 copySourceBtn.addEventListener("click", () => {
@@ -734,10 +915,18 @@ copySourceBtn.addEventListener("click", () => {
 });
 
 clearSourceBtn.addEventListener("click", () => {
-    if (sourceText.value && confirm("确定清空识别文本吗？")) {
+    const active = getActiveVideo();
+    if (sourceText.value && confirm("确定清空当前视频的识别文本吗？")) {
+        if (active && active.status === "done") {
+            active.transcriptionText = "";
+            active.translatedText = "";
+        }
         sourceText.value = "";
         updateWordCount();
         translateBtn.disabled = true;
+        proofreadBtn.disabled = true;
+        clearResult();
+        renderFilmstrip();
     }
 });
 
@@ -788,10 +977,17 @@ async function performTranslation() {
             throw new Error(data.error || "翻译失败");
         }
 
-        translatedText = data.translated_text;
+        const translatedText = data.translated_text;
         resultContent.textContent = translatedText;
         resultContent.classList.remove("hidden");
         resultPlaceholder.classList.add("hidden");
+        playTtsBtn.disabled = false;
+
+        // 保存翻译到当前视频
+        const active = getActiveVideo();
+        if (active) {
+            active.translatedText = translatedText;
+        }
 
         const targetName = targetLang.options[targetLang.selectedIndex].text;
         showToast(`翻译完成 → ${targetName}`);
@@ -819,23 +1015,92 @@ swapLangBtn.addEventListener("click", () => {
     sourceLang.value = targetLang.value;
     targetLang.value = temp;
 
-    // 如果有翻译结果，交换文本
-    if (translatedText) {
-        sourceText.value = translatedText;
+    const active = getActiveVideo();
+    const activeTranslation = active?.translatedText || "";
+
+    if (activeTranslation) {
+        sourceText.value = activeTranslation;
         updateWordCount();
-        translatedText = "";
+        if (active) {
+            active.transcriptionText = activeTranslation;
+            active.translatedText = "";
+        }
         clearResult();
         showToast("已交换语言和文本");
     }
 });
 
+// ========== TTS 播放/暂停翻译语音 ==========
+let ttsLoaded = false;
+
+ttsAudio.addEventListener("ended", () => {
+    playTtsBtn.textContent = "🔊 播放";
+    ttsLoaded = false;
+});
+
+ttsAudio.addEventListener("pause", () => {
+    if (!ttsAudio.ended) {
+        playTtsBtn.textContent = "▶ 继续";
+    }
+});
+
+playTtsBtn.addEventListener("click", async () => {
+    // 已加载 → 切换播放/暂停
+    if (ttsLoaded) {
+        if (ttsAudio.paused) {
+            await ttsAudio.play();
+            playTtsBtn.textContent = "⏸ 暂停";
+        } else {
+            ttsAudio.pause();
+        }
+        return;
+    }
+
+    const active = getActiveVideo();
+    const text = active?.translatedText || "";
+    if (!text) {
+        showToast("请先翻译文本");
+        return;
+    }
+
+    playTtsBtn.disabled = true;
+    playTtsBtn.textContent = "生成中...";
+
+    try {
+        const response = await fetch("/api/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                text: text,
+                target_lang: targetLang.value,
+            }),
+        });
+        const data = await response.json();
+
+        if (!data.success) throw new Error(data.error || "TTS 失败");
+
+        ttsAudio.src = "data:audio/mp3;base64," + data.audio_base64;
+        ttsAudio.classList.remove("hidden");
+        await ttsAudio.play();
+        playTtsBtn.textContent = "⏸ 暂停";
+        ttsLoaded = true;
+
+    } catch (error) {
+        showToast(`语音生成失败: ${error.message}`);
+    } finally {
+        playTtsBtn.disabled = false;
+    }
+});
+
 // ========== 翻译结果操作 ==========
 copyResultBtn.addEventListener("click", () => {
-    if (!translatedText) {
+    const active = getActiveVideo();
+    const textToCopy = active?.translatedText || "";
+    if (!textToCopy) {
         showToast("没有可复制的翻译结果");
         return;
     }
-    navigator.clipboard.writeText(translatedText).then(() => {
+    navigator.clipboard.writeText(textToCopy).then(() => {
         showToast("翻译结果已复制到剪贴板");
     }).catch(() => {
         showToast("复制失败，请手动选择复制");
@@ -847,11 +1112,16 @@ clearResultBtn.addEventListener("click", () => {
 });
 
 function clearResult() {
-    translatedText = "";
+    const active = getActiveVideo();
+    if (active) active.translatedText = "";
     resultContent.textContent = "";
     resultContent.classList.add("hidden");
     resultPlaceholder.textContent = "翻译结果将显示在这里";
     resultPlaceholder.classList.remove("hidden");
+    playTtsBtn.disabled = true;
+    playTtsBtn.textContent = "🔊 播放";
+    ttsAudio.classList.add("hidden");
+    ttsLoaded = false;
 }
 
 // ========== 目标语言变更时自动翻译 ==========

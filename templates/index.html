@@ -21,24 +21,10 @@
     <main class="main-container">
         <!-- 左侧：上传 + 编辑区 -->
         <section class="panel panel-left">
-            <!-- 行业选择 -->
-            <div class="domain-section" id="domainSection">
-                <div class="section-header">
-                    <h3>📂 选择视频领域（提高识别准确率）</h3>
-                </div>
-                <div class="domain-grid" id="domainGrid">
-                    <div class="domain-card loading">加载中...</div>
-                </div>
-            </div>
-            <!-- 展开行业选择按钮（折叠后显示） -->
-            <button class="domain-toggle-btn hidden" id="domainToggleBtn" title="展开行业选择">
-                📂 展开行业选择
-            </button>
-
             <!-- 上传区域 -->
             <div class="upload-section">
                 <div class="upload-area" id="uploadArea">
-                    <input type="file" id="videoInput" accept="video/*" hidden>
+                    <input type="file" id="videoInput" accept="video/*" multiple hidden>
                     <div class="upload-icon">
                         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -83,6 +69,11 @@
                 </div>
             </div>
 
+            <!-- 视频缩略图条 -->
+            <div class="filmstrip-container hidden" id="filmstripContainer">
+                <div class="filmstrip" id="filmstrip"></div>
+            </div>
+
             <!-- 文本编辑区 -->
             <div class="editor-section">
                 <div class="section-header">
@@ -100,21 +91,6 @@
                     placeholder="上传视频后，语音识别结果将显示在这里。你也可以直接粘贴文本进行翻译..."
                     disabled
                 ></textarea>
-                <!-- 说话人标注区 -->
-                <div class="speaker-section hidden" id="speakerSection">
-                    <div class="section-header">
-                        <h3>🎤 说话人标注</h3>
-                        <div class="section-actions">
-                            <span class="speaker-legend">
-                                <span class="legend-dot male"></span> 男声
-                                <span class="legend-dot female"></span> 女声
-                            </span>
-                            <button class="btn btn-sm btn-outline" id="dismissSpeakerBtn">收起</button>
-                        </div>
-                    </div>
-                    <div class="speaker-timeline" id="speakerTimeline"></div>
-                </div>
-
                 <!-- 校对结果区 -->
                 <div class="proofread-panel hidden" id="proofreadPanel">
                     <div class="proofread-header">
@@ -165,6 +141,7 @@
                 <div class="section-header">
                     <h3>🌐 翻译结果</h3>
                     <div class="section-actions">
+                        <button class="btn btn-sm btn-outline" id="playTtsBtn" disabled title="播放翻译语音">🔊 播放</button>
                         <button class="btn btn-sm btn-outline" id="copyResultBtn">复制</button>
                         <button class="btn btn-sm btn-outline" id="clearResultBtn">清空</button>
                     </div>
@@ -174,6 +151,7 @@
                         翻译结果将显示在这里
                     </div>
                     <div class="result-content hidden" id="resultContent"></div>
+                    <audio id="ttsAudio" class="hidden"></audio>
                 </div>
                 <div class="translate-progress hidden" id="translateProgress">
                     <div class="spinner spinner-sm"></div>
